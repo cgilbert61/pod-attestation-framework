@@ -19,9 +19,10 @@ COPY registry ./registry
 COPY snapshot ./snapshot
 RUN pip install --no-cache-dir --no-deps -e .
 
-VOLUME ["/var/lib/pod/keys", "/var/lib/pod/snapshots"]
-ENV POD_KEY_DIR=/var/lib/pod/keys
-ENV POD_SNAPSHOT_FILE=/var/lib/pod/snapshots/pod_snapshot.dsse.json
+VOLUME ["/var/lib/pod/private_keys", "/var/lib/pod/public_keys", "/var/lib/pod/state"]
+ENV POD_PRIVATE_KEY_DIR=/var/lib/pod/private_keys
+ENV POD_PUBLIC_KEY_DIR=/var/lib/pod/public_keys
+ENV POD_SNAPSHOT_FILE=/var/lib/pod/state/snapshots/pod_snapshot.dsse.json
 EXPOSE 8081
 
 CMD ["uvicorn", "snapshot.publisher:create_snapshot_app", "--factory", "--host", "0.0.0.0", "--port", "8081"]
