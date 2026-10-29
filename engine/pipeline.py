@@ -51,7 +51,12 @@ class AttestationEngine:
         locator = locator_override or doc.locator
 
         existing = self.registry.lookup_by_locator(locator, include_expired_or_revoked=False)
-        if existing and not force_rescan and existing["content_sha256"] == doc.content_sha256:
+        if (
+            existing
+            and not force_rescan
+            and existing["content_sha256"] == doc.content_sha256
+            and existing.get("chunk_hashes")
+        ):
             return {"action": "unchanged", "record": existing, "review": None}
 
         # Stage 1 (Labels-First Fast Lane): Read embedded Purview / MIP sensitivity label directly off the file if present
