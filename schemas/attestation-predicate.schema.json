@@ -172,6 +172,19 @@
           ],
           "default": "raw_bytes_sha256",
           "description": "Deterministic method used to compute content_sha256."
+        },
+        "extracted_text_sha256": {
+          "type": ["string", "null"],
+          "pattern": "^[a-f0-9]{64}$",
+          "description": "Lowercase hex SHA-256 digest of the canonical normalized extracted text."
+        },
+        "chunk_hashes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "description": "Deterministic list of lowercase hex SHA-256 digests of normalized paragraphs, rows, and chunks."
         }
       }
     },

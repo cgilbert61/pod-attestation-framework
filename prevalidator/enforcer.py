@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -19,15 +21,28 @@ from registry.schema_validator import (
     format_iso8601,
     parse_iso8601,
 )
-from registry.signing import Keyring, verify_dsse_envelope
+from registry.signing import Keyring, normalize_canonical_text, verify_dsse_envelope
 
 # Uniform denial message mandated by Phase 2 Consumer Conformance Suite (never leaks which rule fired)
 UNIFORM_DENIAL_MESSAGE = "Request denied by data attestation policy."
 UNIFORM_DENIAL_CODE = "policy_denied"
 
-# Regex matching inline <pod:object locator="..." [sha256="..."]>...</pod:object> blocks
+# Security reason codes
+REASON_HASH_MISMATCH = "REASON_HASH_MISMATCH"
+REASON_UNVERIFIED_INLINE_CONTENT = "REASON_UNVERIFIED_INLINE_CONTENT"
+REASON_MALFORMED_POD_TAG = "REASON_MALFORMED_POD_TAG"
+REASON_UNATTESTED_CONTEXT_OVERFLOW = "REASON_UNATTESTED_CONTEXT_OVERFLOW"
+
+# Strict regexes for <pod:object> structural validation
+POD_OPEN_TAG_STRICT_RE = re.compile(
+    r'^<pod:object\s+locator="([^"<>]+)"(?:\s+sha256="([a-fA-F0-9]{64})")?\s*>$'
+)
+POD_CLOSE_TAG_STRICT_RE = re.compile(r"^</pod:object>$")
+POD_ANY_TAG_TOKEN_RE = re.compile(r"<\s*/?\s*pod:object\b[^>]*>?|<\s*/?\s*pod:object", re.IGNORECASE)
+
+# Regex matching balanced inline <pod:object locator="..." [sha256="..."]>...</pod:object> blocks
 POD_OBJECT_TAG_RE = re.compile(
-    r'<pod:object\s+locator="([^"]+)"(?:\s+sha256="([a-fA-F0-9]{64})")?\s*>(.*?)</pod:object>',
+    r'<pod:object\s+locator="([^"<>]+)"(?:\s+sha256="([a-fA-F0-9]{64})")?\s*>(.*?)</pod:object>',
     re.DOTALL,
 )
 
@@ -78,9 +93,8 @@ class InMemorySnapshotStore:
 
     def load_from_envelope(self, envelope: dict[str, Any], now: datetime | None = None) -> dict[str, Any]:
         """Verify DSSE signature and sequence number before atomically updating the in-memory snapshot."""
-        ver = verify_dsse_envelope(
+        ver = self.keyring.verify_dsse(
             envelope=envelope,
-            keyring=self.keyring,
             expected_predicate_type=SNAPSHOT_PREDICATE_TYPE,
             check_expiry=True,
             now=now,
@@ -122,6 +136,9 @@ class PrevalidatorEnforcer:
         caller_key_clearance_map: dict[str, str] | None = None,
         jwt_secret: str | None = None,
         enable_presidio_fallback: bool = True,
+        allow_header_only_objects: bool | None = None,
+        strict_inline_hash: bool | None = None,
+        max_untagged_chars: int | None = None,
     ) -> None:
         if mode not in ("enforce", "observe"):
             raise ValueError("mode must be 'enforce' or 'observe'")
@@ -143,6 +160,21 @@ class PrevalidatorEnforcer:
         }
         self.jwt_secret = jwt_secret or "pod-local-jwt-secret-key-minimum-32-bytes-long"
         self.enable_presidio_fallback = enable_presidio_fallback
+        self.allow_header_only_objects = (
+            allow_header_only_objects
+            if allow_header_only_objects is not None
+            else os.environ.get("POD_ALLOW_HEADER_ONLY_OBJECTS", "false").lower() in ("1", "true", "yes")
+        )
+        self.strict_inline_hash = (
+            strict_inline_hash
+            if strict_inline_hash is not None
+            else os.environ.get("POD_STRICT_INLINE_HASH", "true").lower() in ("1", "true", "yes")
+        )
+        self.max_untagged_chars = (
+            max_untagged_chars
+            if max_untagged_chars is not None
+            else int(os.environ.get("POD_MAX_UNTAGGED_CHARS", "2000"))
+        )
         self.classifier = PresidioClassifier()
         self.audit_log: list[AuditLogEntry] = []
 
@@ -178,6 +210,94 @@ class PrevalidatorEnforcer:
                     return egress
         return self.default_egress_class
 
+    @staticmethod
+    def _validate_pod_tag_structure(text: str) -> tuple[bool, list[tuple[int, int, str, str | None, str]]]:
+        """Strictly validate `<pod:object>` tag balance, syntax, and absence of nesting or early-close smuggling.
+
+        Returns `(is_valid, parsed_blocks)` where each block is `(start, end, locator, sha256, inner_text)`.
+        """
+        tokens = list(POD_ANY_TAG_TOKEN_RE.finditer(text))
+        if not tokens:
+            return True, []
+
+        blocks: list[tuple[int, int, str, str | None, str]] = []
+        open_token: tuple[int, int, str, str | None] | None = None
+
+        for tok in tokens:
+            raw_tok = tok.group(0)
+            if raw_tok.lower().startswith("</") or re.match(r"^<\s*/", raw_tok):
+                # Closing tag
+                if not POD_CLOSE_TAG_STRICT_RE.match(raw_tok):
+                    return False, []
+                if open_token is None:
+                    # Early or orphan closing tag
+                    return False, []
+                o_start, o_end, loc, sha = open_token
+                inner_text = text[o_end : tok.start()]
+                # Ensure no nested or partial pod:object markers inside inner_text
+                if "pod:object" in inner_text.lower():
+                    return False, []
+                blocks.append((o_start, tok.end(), loc, sha, inner_text))
+                open_token = None
+            else:
+                # Opening tag
+                if open_token is not None:
+                    # Nested or unclosed previous opening tag
+                    return False, []
+                m = POD_OPEN_TAG_STRICT_RE.match(raw_tok)
+                if not m:
+                    return False, []
+                open_token = (tok.start(), tok.end(), m.group(1), m.group(2))
+
+        if open_token is not None:
+            # Unclosed opening tag at end of text
+            return False, []
+
+        return True, blocks
+
+    @staticmethod
+    def _verify_inner_text_cryptographically(
+        inner_text: str,
+        inline_sha256: str | None,
+        entry: dict[str, Any],
+    ) -> bool:
+        """Verify live SHA-256 of `inner_text` against `content_sha256`, `extracted_text_sha256`, or `chunk_hashes`."""
+        raw_inner_sha256 = hashlib.sha256(inner_text.encode("utf-8")).hexdigest()
+        norm_inner_sha256 = hashlib.sha256(normalize_canonical_text(inner_text)).hexdigest()
+
+        # Never trust a caller-supplied sha256 attribute that contradicts the live digest of inner_text
+        if inline_sha256 is not None:
+            supplied = inline_sha256.lower()
+            if supplied not in (raw_inner_sha256, norm_inner_sha256):
+                return False
+
+        att_content_sha = (entry.get("content_sha256") or "").lower()
+        att_text_sha = (entry.get("extracted_text_sha256") or "").lower()
+        att_chunks = {h.lower() for h in (entry.get("chunk_hashes") or [])}
+
+        # 1. Whole-object content_sha256 match
+        if raw_inner_sha256 == att_content_sha or norm_inner_sha256 == att_content_sha:
+            return True
+
+        # 2. Full normalized extracted_text_sha256 match
+        if att_text_sha and (norm_inner_sha256 == att_text_sha or raw_inner_sha256 == att_text_sha):
+            return True
+
+        # 3. Deterministic chunk_hashes match
+        if norm_inner_sha256 in att_chunks or raw_inner_sha256 in att_chunks:
+            return True
+
+        # 4. Multi-paragraph / multi-line composition strictly from attested chunk_hashes
+        if att_chunks and "\n" in inner_text:
+            sub_lines = [ln.strip() for ln in inner_text.splitlines() if ln.strip()]
+            if sub_lines and all(
+                hashlib.sha256(normalize_canonical_text(ln)).hexdigest() in att_chunks
+                for ln in sub_lines
+            ):
+                return True
+
+        return False
+
     def _evaluate_single_locator(
         self,
         locator: str,
@@ -186,41 +306,45 @@ class PrevalidatorEnforcer:
         caller_clearance: str,
         target_egress: str,
         now_dt: datetime,
-    ) -> tuple[str, str | None]:
-        """Return `(action, reason_code)` where action is `'allow' | 'strip' | 'deny'`."""
+        inner_text: str | None = None,
+    ) -> tuple[str, list[str]]:
+        """Return `(action, reason_codes)` where action is `'allow' | 'strip' | 'deny'`."""
         entry = entries.get(locator)
         if not entry:
-            return "deny", "UNATTESTED"
+            return "deny", ["UNATTESTED"]
 
         status = entry.get("status", "active")
         if status == "revoked":
-            return "deny", "REVOKED"
+            return "deny", ["REVOKED"]
 
         rec_exp = parse_iso8601(entry["record_expires_at"])
         if status == "expired" or now_dt >= rec_exp:
-            return "deny", "EXPIRED"
+            return "deny", ["EXPIRED"]
 
-        # If caller supplied an explicit SHA-256 on the block and it mismatches the attested fingerprint, treat as UNATTESTED
-        if inline_sha256 and inline_sha256.lower() != entry["content_sha256"].lower():
-            return "deny", "UNATTESTED"
+        # Live cryptographic verification of inline <pod:object> content
+        if inner_text is not None and self.strict_inline_hash:
+            if not self._verify_inner_text_cryptographically(inner_text, inline_sha256, entry):
+                return "deny", [REASON_HASH_MISMATCH, "HASH_DRIFT"]
+        elif inline_sha256 and inline_sha256.lower() != entry["content_sha256"].lower():
+            return "deny", [REASON_HASH_MISMATCH, "HASH_DRIFT"]
 
         # Check caller clearance against record minimum_clearance
         req_clearance = entry["minimum_clearance"]
         if CLEARANCE_ORDER[caller_clearance] < CLEARANCE_ORDER[req_clearance]:
-            return "deny", "INSUFFICIENT_CLEARANCE"
+            return "deny", ["INSUFFICIENT_CLEARANCE"]
 
         # Check destination egress class against record egress_class
         allowed_egress = entry["egress_class"]
         if EGRESS_ORDER[target_egress] > EGRESS_ORDER[allowed_egress]:
-            return "deny", "EGRESS_DENIED"
+            return "deny", ["EGRESS_DENIED"]
 
         # Check AI eligibility ('allow' | 'strip' | 'deny')
         ai_elig = entry["ai_eligibility"]
         if ai_elig == "deny":
-            return "deny", "EGRESS_DENIED"
+            return "deny", ["EGRESS_DENIED"]
         if ai_elig == "strip":
-            return "strip", None
-        return "allow", None
+            return "strip", []
+        return "allow", []
 
     @staticmethod
     def _uniform_denial_response() -> dict[str, Any]:
@@ -270,58 +394,48 @@ class PrevalidatorEnforcer:
         entries = snapshot.get("entries", {})
         reason_codes: list[str] = []
         locators_seen: list[str] = []
+        inline_verified_locators: set[str] = set()
         stripped_locators: list[str] = []
+        total_untagged_chars = 0
+        has_inline_pod_tags = False
 
-        # 1. Evaluate request-level header locators (`X-POD-Locators`: comma-separated locators)
-        header_loc_str = norm_hdrs.get("x-pod-locators", "").strip()
-        if header_loc_str:
-            for raw_loc in [x.strip() for x in header_loc_str.split(",") if x.strip()]:
-                locators_seen.append(raw_loc)
-                action, r_code = self._evaluate_single_locator(
-                    locator=raw_loc,
-                    inline_sha256=None,
-                    entries=entries,
-                    caller_clearance=caller_clearance,
-                    target_egress=target_egress,
-                    now_dt=now_dt,
-                )
-                if action == "deny" and r_code:
-                    reason_codes.append(r_code)
-                elif action == "strip":
-                    # Header-level locator has no inline block boundary to strip -> must deny whole request
-                    reason_codes.append("EGRESS_DENIED")
-
-        # 2. Evaluate and transform message texts (inline `<pod:object ...>` blocks + fallback Presidio scan)
+        # 1. Evaluate and transform message texts (strict `<pod:object>` parser + live inner-text SHA-256 + fallback Presidio)
         new_payload = json.loads(json.dumps(payload))
 
         def process_text(text: str) -> str:
-            nonlocal reason_codes, locators_seen, stripped_locators
+            nonlocal reason_codes, locators_seen, stripped_locators, total_untagged_chars, has_inline_pod_tags
 
-            # Track untagged segments outside <pod:object> blocks for fallback Presidio inspection
+            is_valid_structure, parsed_blocks = self._validate_pod_tag_structure(text)
+            if not is_valid_structure:
+                reason_codes.append(REASON_MALFORMED_POD_TAG)
+                return text
+
+            if parsed_blocks:
+                has_inline_pod_tags = True
+
             untagged_parts: list[str] = []
             last_end = 0
             out_segments: list[str] = []
 
-            for match in POD_OBJECT_TAG_RE.finditer(text):
-                untagged_parts.append(text[last_end : match.start()])
-                last_end = match.end()
+            for start_idx, end_idx, loc, sha, inner_content in parsed_blocks:
+                untagged_seg = text[last_end:start_idx]
+                untagged_parts.append(untagged_seg)
+                last_end = end_idx
 
-                loc = match.group(1)
-                sha = match.group(2)
-                inner_content = match.group(3)
                 locators_seen.append(loc)
+                inline_verified_locators.add(loc)
 
-                action, r_code = self._evaluate_single_locator(
+                action, r_codes = self._evaluate_single_locator(
                     locator=loc,
                     inline_sha256=sha,
                     entries=entries,
                     caller_clearance=caller_clearance,
                     target_egress=target_egress,
                     now_dt=now_dt,
+                    inner_text=inner_content,
                 )
                 if action == "deny":
-                    if r_code:
-                        reason_codes.append(r_code)
+                    reason_codes.extend(r_codes)
                     if self.mode == "observe":
                         out_segments.append(inner_content)
                 elif action == "strip":
@@ -334,7 +448,10 @@ class PrevalidatorEnforcer:
                     # Allowed -> unwrap <pod:object> tags and forward clean content
                     out_segments.append(inner_content)
 
-            untagged_parts.append(text[last_end:])
+            tail_seg = text[last_end:]
+            untagged_parts.append(tail_seg)
+            for p in untagged_parts:
+                total_untagged_chars += len(p.strip())
             untagged_joined = " ".join(p for p in untagged_parts if p.strip())
 
             # Fallback content inspection (Presidio) ONLY on untagged free text carrying no object identity
@@ -345,16 +462,16 @@ class PrevalidatorEnforcer:
                     reason_codes.append("UNATTESTED")
 
             # Reconstruct full text with transformed inline blocks
-            if locators_seen:
+            if parsed_blocks:
                 rebuilt: list[str] = []
                 idx = 0
                 seg_idx = 0
-                for match in POD_OBJECT_TAG_RE.finditer(text):
-                    rebuilt.append(text[idx : match.start()])
+                for start_idx, end_idx, _loc, _sha, _inner in parsed_blocks:
+                    rebuilt.append(text[idx:start_idx])
                     if seg_idx < len(out_segments):
                         rebuilt.append(out_segments[seg_idx])
                         seg_idx += 1
-                    idx = match.end()
+                    idx = end_idx
                 rebuilt.append(text[idx:])
                 return "".join(rebuilt).strip()
             return text
@@ -376,6 +493,37 @@ class PrevalidatorEnforcer:
                 for part in content:
                     if isinstance(part, dict) and isinstance(part.get("text"), str):
                         part["text"] = process_text(part["text"])
+
+        # 2. Enforce Untagged Context Quota when <pod:object> tags or X-POD-Require-Attested-Context: true are present
+        require_attested_ctx = norm_hdrs.get("x-pod-require-attested-context", "").lower() in ("1", "true", "yes")
+        if (has_inline_pod_tags or require_attested_ctx) and total_untagged_chars > self.max_untagged_chars:
+            reason_codes.append(REASON_UNATTESTED_CONTEXT_OVERFLOW)
+
+        # 3. Evaluate request-level header locators (`X-POD-Locators` or `X-POD-Objects`)
+        header_loc_str = ",".join(
+            s for s in (norm_hdrs.get("x-pod-locators", "").strip(), norm_hdrs.get("x-pod-objects", "").strip()) if s
+        )
+        if header_loc_str:
+            for raw_loc in [x.strip() for x in header_loc_str.split(",") if x.strip()]:
+                if raw_loc not in locators_seen:
+                    locators_seen.append(raw_loc)
+                if self.strict_inline_hash and not self.allow_header_only_objects and raw_loc not in inline_verified_locators:
+                    reason_codes.append(REASON_UNVERIFIED_INLINE_CONTENT)
+                    continue
+                action, r_codes = self._evaluate_single_locator(
+                    locator=raw_loc,
+                    inline_sha256=None,
+                    entries=entries,
+                    caller_clearance=caller_clearance,
+                    target_egress=target_egress,
+                    now_dt=now_dt,
+                    inner_text=None,
+                )
+                if action == "deny":
+                    reason_codes.extend(r_codes)
+                elif action == "strip":
+                    # Header-level locator has no inline block boundary to strip -> must deny whole request
+                    reason_codes.append("EGRESS_DENIED")
 
         # Deduplicate reason codes preserving discovery order
         unique_reasons = list(dict.fromkeys(reason_codes))

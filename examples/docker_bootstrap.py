@@ -20,11 +20,12 @@ def main() -> int:
     db_url = os.environ.get("POD_REGISTRY_DB_URL", "postgresql+psycopg2://pod:pod_password@postgres:5432/pod_registry")
     if db_url.startswith("postgresql://"):
         db_url = "postgresql+psycopg2://" + db_url[len("postgresql://") :]
-    key_dir = Path(os.environ.get("POD_KEY_DIR", "/var/lib/pod/keys"))
-    snapshot_file = Path(os.environ.get("POD_SNAPSHOT_FILE", "/var/lib/pod/snapshots/pod_snapshot.dsse.json"))
-    estate_dir = Path(os.environ.get("POD_ESTATE_DIR", "/var/lib/pod/data/estate"))
+    snapshot_file = Path(os.environ.get("POD_SNAPSHOT_FILE", "/var/lib/pod/state/snapshots/pod_snapshot.dsse.json"))
+    estate_dir = Path(os.environ.get("POD_ESTATE_DIR", "/var/lib/pod/state/estate"))
     prevalidator_url = os.environ.get("POD_PREVALIDATOR_URL", "http://prevalidator:8082")
+    snapshot_publisher_url = os.environ.get("POD_SNAPSHOT_PUBLISHER_URL", "").rstrip("/")
     admin_key = os.environ.get("POD_ADMIN_API_KEY", "pod-dev-admin-key")
+    control_token = os.environ.get("POD_CONTROL_PLANE_TOKEN", "pod-dev-control-plane-token")
 
     # 1. Build synthetic fileshare on volume
     estate = build_synthetic_estate(estate_dir)
@@ -90,7 +91,7 @@ def main() -> int:
     pg_engine.dispose()
 
     # 3. Run AttestationEngine over fileshare and sqlite/postgres estate
-    registry = RegistryService(db_url=db_url, key_dir=key_dir)
+    registry = RegistryService(db_url=db_url)
     engine = AttestationEngine(registry=registry)
 
     file_results = engine.crawl_file_share(
@@ -106,9 +107,29 @@ def main() -> int:
         environment="production",
     )
 
-    # 4. Publish signed DSSE snapshot to shared volume
-    publisher = SnapshotPublisher(registry=registry, ttl_seconds=3600, snapshot_output_path=snapshot_file)
-    envelope = publisher.publish_snapshot()
+    # 4. Publish signed DSSE snapshot via Snapshot Publisher (or local publisher in single-process mode)
+    ctrl_headers = {
+        "X-POD-Control-Token": control_token,
+        "X-POD-Admin-Key": admin_key,
+        "Authorization": f"Bearer {control_token}",
+    }
+    if snapshot_publisher_url:
+        envelope = None
+        for _ in range(15):
+            try:
+                with httpx.Client(timeout=5.0) as client:
+                    r_pub = client.post(f"{snapshot_publisher_url}/v1/publish", headers=ctrl_headers)
+                    if r_pub.status_code == 200:
+                        envelope = r_pub.json()
+                        break
+            except Exception:
+                pass
+            time.sleep(1.0)
+        if envelope is None:
+            raise RuntimeError(f"Failed to trigger snapshot publish at {snapshot_publisher_url}/v1/publish")
+    else:
+        publisher = SnapshotPublisher(registry=registry, ttl_seconds=3600, snapshot_output_path=snapshot_file)
+        envelope = publisher.publish_snapshot()
     registry.close()
 
     # 5. Notify Prevalidator to reload snapshot in memory
@@ -118,7 +139,7 @@ def main() -> int:
             with httpx.Client(timeout=3.0) as client:
                 r = client.post(
                     f"{prevalidator_url.rstrip('/')}/v1/admin/reload-snapshot",
-                    headers={"X-POD-Admin-Key": admin_key},
+                    headers=ctrl_headers,
                     json={"envelope": envelope},
                 )
                 if r.status_code == 200:

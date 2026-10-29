@@ -203,6 +203,17 @@ def main() -> int:
     assert r_deny_restricted.status_code == 403
     assert r_deny_unattested.status_code == 403
     assert r_deny_restricted.json() == r_deny_unattested.json()
+
+    # Verify cryptographic privilege separation: prevalidator cannot access any *.priv.pem file
+    import subprocess
+
+    priv_check = subprocess.run(
+        ["docker", "compose", "exec", "-T", "prevalidator", "sh", "-c", "find /var/lib/pod -name '*.priv.pem' 2>/dev/null"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert priv_check.stdout.strip() == "", f"Private key exposed inside prevalidator: {priv_check.stdout}"
     return 0
 
 

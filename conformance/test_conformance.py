@@ -184,7 +184,12 @@ def test_conformance_default_deny_unattested_and_uniform_denial_responses(confor
     d_clearance = sim.check_request(
         {
             "model": "local-model",
-            "messages": [{"role": "user", "content": '<pod:object locator="file:///estate/internal_roadmap.txt">Roadmap</pod:object>'}],
+            "messages": [
+                {
+                    "role": "user",
+                    "content": '<pod:object locator="file:///estate/internal_roadmap.txt">Internal Q4 roadmap PROJ-ALPHA</pod:object>',
+                }
+            ],
         },
         headers={"X-POD-Caller-Key": "pod-key-public"},
         now=future_now,
@@ -196,7 +201,12 @@ def test_conformance_default_deny_unattested_and_uniform_denial_responses(confor
     d_egress = sim.check_request(
         {
             "model": "gpt-4o",
-            "messages": [{"role": "user", "content": '<pod:object locator="file:///estate/internal_roadmap.txt">Roadmap</pod:object>'}],
+            "messages": [
+                {
+                    "role": "user",
+                    "content": '<pod:object locator="file:///estate/internal_roadmap.txt">Internal Q4 roadmap PROJ-ALPHA</pod:object>',
+                }
+            ],
         },
         headers={"X-POD-Caller-Key": "pod-key-internal"},
         now=future_now,
@@ -269,7 +279,7 @@ def test_conformance_inline_strip_rule(conformance_env):
                 "content": (
                     "Answer the user greeting. "
                     '<pod:object locator="file:///estate/confidential_customers.csv">'
-                    "alice@example.com"
+                    "Customer email list: alice@example.com"
                     "</pod:object>"
                 ),
             }

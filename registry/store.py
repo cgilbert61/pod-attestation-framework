@@ -100,9 +100,16 @@ class RegistryService:
         if raw_url.startswith("postgresql://"):
             raw_url = "postgresql+psycopg2://" + raw_url[len("postgresql://") :]
         self.db_url = raw_url
-        self.key_dir = Path(key_dir or os.environ.get("POD_KEY_DIR", "./.pod_keys"))
-        self.keyring = Keyring(self.key_dir)
-        self.keyring.ensure_active_key()
+        self.registry_service_url = os.environ.get("POD_REGISTRY_SERVICE_URL", "").rstrip("/") if key_dir is None else ""
+        self.control_plane_token = os.environ.get("POD_CONTROL_PLANE_TOKEN", "pod-dev-control-plane-token")
+        self.admin_api_key = os.environ.get("POD_ADMIN_API_KEY", "pod-dev-admin-key")
+        self.key_dir = Path(key_dir or os.environ.get("POD_PUBLIC_KEY_DIR") or os.environ.get("POD_KEY_DIR", "./.pod_keys"))
+        if self.registry_service_url:
+            self.keyring = Keyring(public_key_dir=self.key_dir, verification_only=True)
+        else:
+            priv_dir = Path(key_dir) if key_dir else Path(os.environ.get("POD_PRIVATE_KEY_DIR") or self.key_dir)
+            self.keyring = Keyring(key_dir=self.key_dir, private_key_dir=priv_dir, public_key_dir=self.key_dir)
+            self.keyring.ensure_active_key(purpose="attestation", operator_id="pod-registry")
 
         self.engine = create_engine(self.db_url, future=True)
         Base.metadata.create_all(self.engine)
@@ -113,12 +120,16 @@ class RegistryService:
         self.engine.dispose()
 
     def _row_to_dict(self, row: AttestationRecordModel) -> dict[str, Any]:
+        stmt = json.loads(row.statement_json)
+        integrity = stmt.get("predicate", {}).get("integrity", {})
         return {
             "record_id": row.record_id,
             "locator": row.locator,
             "object_type": row.object_type,
             "content_sha256": row.content_sha256,
             "schema_sha256": row.schema_sha256,
+            "extracted_text_sha256": integrity.get("extracted_text_sha256"),
+            "chunk_hashes": integrity.get("chunk_hashes", []),
             "tier": row.tier,
             "confidence": row.confidence,
             "status": row.status,
@@ -131,7 +142,7 @@ class RegistryService:
             "revoked_at": row.revoked_at,
             "revocation_reason": row.revocation_reason,
             "is_current": row.is_current,
-            "statement": json.loads(row.statement_json),
+            "statement": stmt,
             "dsse_envelope": json.loads(row.dsse_envelope_json),
         }
 
@@ -175,6 +186,8 @@ class RegistryService:
         size_bytes: int | None = None,
         row_count: int | None = None,
         fingerprint_method: str = "raw_bytes_sha256",
+        extracted_text_sha256: str | None = None,
+        chunk_hashes: list[str] | None = None,
         classifier_engine: str = "presidio",
         policy: dict[str, str] | None = None,
         ttl_days: int | None = None,
@@ -190,6 +203,50 @@ class RegistryService:
         """
         now_dt = now or datetime.now(timezone.utc)
         now_str = format_iso8601(now_dt)
+
+        if self.registry_service_url and self.keyring.verification_only:
+            import httpx
+
+            payload = {
+                "locator": locator,
+                "content_sha256": content_sha256,
+                "tier": tier,
+                "owner": owner,
+                "confidence": confidence,
+                "low_confidence": low_confidence,
+                "sensitive_categories": sensitive_categories,
+                "object_type": object_type,
+                "display_name": display_name,
+                "environment": environment,
+                "steward": steward,
+                "org_unit": org_unit,
+                "jurisdiction": jurisdiction,
+                "attested_by": attested_by,
+                "source_system": source_system,
+                "scanner_version": scanner_version,
+                "derived_from": derived_from,
+                "schema_sha256": schema_sha256,
+                "size_bytes": size_bytes,
+                "row_count": row_count,
+                "fingerprint_method": fingerprint_method,
+                "extracted_text_sha256": extracted_text_sha256,
+                "chunk_hashes": chunk_hashes,
+                "classifier_engine": classifier_engine,
+                "policy": policy,
+                "ttl_days": ttl_days,
+            }
+            with httpx.Client(timeout=15.0) as client:
+                resp = client.post(
+                    f"{self.registry_service_url}/v1/records/issue-finding",
+                    headers={
+                        "X-POD-Control-Token": self.control_plane_token,
+                        "X-POD-Admin-Key": self.admin_api_key,
+                        "Authorization": f"Bearer {self.control_plane_token}",
+                    },
+                    json=payload,
+                )
+                resp.raise_for_status()
+                return resp.json()
 
         # Enforce lineage tier floor: derived objects inherit at least the highest tier of their upstream inputs
         effective_tier = tier
@@ -244,6 +301,8 @@ class RegistryService:
                         "size_bytes": size_bytes,
                         "row_count": row_count,
                         "fingerprint_method": fingerprint_method,
+                        "extracted_text_sha256": extracted_text_sha256,
+                        "chunk_hashes": chunk_hashes or [],
                         "derived_from": lineage_list,
                     }
                 )
@@ -302,6 +361,8 @@ class RegistryService:
                 size_bytes=size_bytes,
                 row_count=row_count,
                 fingerprint_method=fingerprint_method,
+                extracted_text_sha256=extracted_text_sha256,
+                chunk_hashes=chunk_hashes,
                 confidence=confidence,
                 sensitive_categories=sensitive_categories,
                 classifier_engine=classifier_engine,
@@ -794,6 +855,8 @@ class RegistryService:
                     size_bytes=meta.get("size_bytes"),
                     row_count=meta.get("row_count"),
                     fingerprint_method=meta.get("fingerprint_method", "raw_bytes_sha256"),
+                    extracted_text_sha256=meta.get("extracted_text_sha256"),
+                    chunk_hashes=meta.get("chunk_hashes", []),
                     derived_from=meta.get("derived_from", []),
                     now=now_dt,
                 )

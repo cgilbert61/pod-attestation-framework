@@ -104,6 +104,17 @@
           "redaction_categories": {
             "type": "array",
             "items": { "type": "string" }
+          },
+          "extracted_text_sha256": {
+            "type": ["string", "null"],
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "chunk_hashes": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
           }
         }
       }

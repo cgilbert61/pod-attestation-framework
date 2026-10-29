@@ -50,23 +50,34 @@ class ReviewDecisionRequest(BaseModel):
     rationale: str = "Confirmed in human review"
 
 
+class IssueFindingRequest(BaseModel):
+    model_config = {"extra": "allow"}
+    locator: str
+    content_sha256: str
+    tier: str
+    owner: str
+
+
 def create_registry_app(registry: RegistryService | None = None) -> FastAPI:
     """Create the hardened Registry FastAPI server (requires X-POD-Admin-Key for all catalog queries and mutations)."""
     app = FastAPI(title="POD Authoritative Registry API", version="0.1.0")
     svc = registry or RegistryService()
     admin_key = os.environ.get("POD_ADMIN_API_KEY", "pod-dev-admin-key")
+    control_token = os.environ.get("POD_CONTROL_PLANE_TOKEN", "pod-dev-control-plane-token")
 
     def require_admin_auth(
         x_pod_admin_key: str | None = Header(default=None),
+        x_pod_control_token: str | None = Header(default=None),
         authorization: str | None = Header(default=None),
     ) -> None:
-        token = x_pod_admin_key
+        token = x_pod_admin_key or x_pod_control_token
         if not token and authorization and authorization.lower().startswith("bearer "):
             token = authorization[7:].strip()
-        if token != admin_key:
+        valid_tokens = {t for t in (admin_key, control_token) if t}
+        if not token or token not in valid_tokens:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Registry access denied: valid X-POD-Admin-Key or Bearer token required.",
+                detail="Registry access denied: valid X-POD-Admin-Key, X-POD-Control-Token, or Bearer token required.",
             )
 
     @app.get("/", include_in_schema=False)
@@ -91,6 +102,11 @@ def create_registry_app(registry: RegistryService | None = None) -> FastAPI:
     @app.get("/v1/records/expiring", dependencies=[Depends(require_admin_auth)])
     def list_expiring(within_days: int = 30) -> dict[str, Any]:
         return {"records": svc.list_expiring(within_days=within_days)}
+
+    @app.post("/v1/records/issue-finding", dependencies=[Depends(require_admin_auth)])
+    def issue_finding(req: IssueFindingRequest) -> dict[str, Any]:
+        kwargs = req.model_dump()
+        return svc.issue_or_queue_finding(**kwargs)
 
     @app.post("/v1/records/raise-tier", dependencies=[Depends(require_admin_auth)])
     def raise_tier(req: RaiseTierRequest) -> dict[str, Any]:

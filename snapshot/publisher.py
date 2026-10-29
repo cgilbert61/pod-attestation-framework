@@ -78,17 +78,16 @@ class SnapshotPublisher:
             else:
                 norm_status = "active"
 
-            redact_cats = (
-                rec["statement"]
-                .get("predicate", {})
-                .get("handling", {})
-                .get("redaction_categories", [])
-            )
+            pred_obj = rec["statement"].get("predicate", {})
+            redact_cats = pred_obj.get("handling", {}).get("redaction_categories", [])
+            integrity_obj = pred_obj.get("integrity", {})
 
             entries[rec["locator"]] = {
                 "record_id": rec["record_id"],
                 "locator": rec["locator"],
                 "content_sha256": rec["content_sha256"],
+                "extracted_text_sha256": integrity_obj.get("extracted_text_sha256"),
+                "chunk_hashes": integrity_obj.get("chunk_hashes", []),
                 "tier": rec["tier"],
                 "status": norm_status,
                 "ai_eligibility": rec["ai_eligibility"],
@@ -126,7 +125,7 @@ class SnapshotPublisher:
             "predicate": predicate,
         }
         validate_intoto_statement(statement, expected_predicate_type=SNAPSHOT_PREDICATE_TYPE)
-        envelope = sign_statement(statement, self.registry.keyring)
+        envelope = sign_statement(statement, self.registry.keyring, purpose="snapshot")
 
         self.snapshot_output_path.parent.mkdir(parents=True, exist_ok=True)
         self.snapshot_output_path.write_text(json.dumps(envelope, indent=2, sort_keys=True), encoding="utf-8")
@@ -145,10 +144,27 @@ def create_snapshot_app(publisher: SnapshotPublisher | None = None) -> FastAPI:
     pub = publisher or SnapshotPublisher(RegistryService())
 
     admin_token = os.environ.get("POD_ADMIN_API_KEY", "pod-dev-admin-key")
+    control_token = os.environ.get("POD_CONTROL_PLANE_TOKEN", "pod-dev-control-plane-token")
 
-    def require_admin(x_pod_admin_key: str | None = Header(default=None)) -> None:
-        if x_pod_admin_key != admin_token:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or missing X-POD-Admin-Key")
+    def require_control_or_admin(
+        x_pod_control_token: str | None = Header(default=None),
+        x_pod_admin_key: str | None = Header(default=None),
+        authorization: str | None = Header(default=None),
+    ) -> None:
+        bearer = None
+        if authorization and authorization.lower().startswith("bearer "):
+            bearer = authorization[7:].strip()
+        valid_tokens = {t for t in (control_token, admin_token) if t}
+        if (
+            (x_pod_control_token and x_pod_control_token in valid_tokens)
+            or (x_pod_admin_key and x_pod_admin_key in valid_tokens)
+            or (bearer and bearer in valid_tokens)
+        ):
+            return
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized control-plane mutation: valid X-POD-Control-Token or Bearer token required.",
+        )
 
     @app.get("/", include_in_schema=False)
     def root() -> RedirectResponse:
@@ -162,7 +178,8 @@ def create_snapshot_app(publisher: SnapshotPublisher | None = None) -> FastAPI:
     def get_latest() -> dict[str, Any]:
         return pub.get_latest_snapshot()
 
-    @app.post("/v1/snapshot/publish", dependencies=[Depends(require_admin)])
+    @app.post("/v1/publish", dependencies=[Depends(require_control_or_admin)])
+    @app.post("/v1/snapshot/publish", dependencies=[Depends(require_control_or_admin)])
     def trigger_publish() -> dict[str, Any]:
         return pub.publish_snapshot()
 

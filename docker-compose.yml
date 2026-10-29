@@ -66,13 +66,16 @@ services:
         condition: service_healthy
     environment:
       POD_REGISTRY_DB_URL: postgresql+psycopg2://pod:pod_password@postgres:5432/pod_registry
-      POD_KEY_DIR: /var/lib/pod/keys
+      POD_PRIVATE_KEY_DIR: /var/lib/pod/private_keys
+      POD_PUBLIC_KEY_DIR: /var/lib/pod/public_keys
       POD_ADMIN_API_KEY: ${POD_ADMIN_API_KEY:-pod-dev-admin-key}
+      POD_CONTROL_PLANE_TOKEN: ${POD_CONTROL_PLANE_TOKEN:-pod-dev-control-plane-token}
     ports:
       - "${POD_REGISTRY_PORT:-18080}:8080"
     volumes:
-      - pod_keys:/var/lib/pod/keys
-      - pod_registry_state:/var/lib/pod/data
+      - pod_private_keys:/var/lib/pod/private_keys
+      - pod_public_keys:/var/lib/pod/public_keys
+      - pod_state:/var/lib/pod/state
 
   snapshot-publisher:
     build:
@@ -83,14 +86,17 @@ services:
       - registry
     environment:
       POD_REGISTRY_DB_URL: postgresql+psycopg2://pod:pod_password@postgres:5432/pod_registry
-      POD_KEY_DIR: /var/lib/pod/keys
-      POD_SNAPSHOT_FILE: /var/lib/pod/snapshots/pod_snapshot.dsse.json
+      POD_PRIVATE_KEY_DIR: /var/lib/pod/private_keys
+      POD_PUBLIC_KEY_DIR: /var/lib/pod/public_keys
+      POD_SNAPSHOT_FILE: /var/lib/pod/state/snapshots/pod_snapshot.dsse.json
       POD_ADMIN_API_KEY: ${POD_ADMIN_API_KEY:-pod-dev-admin-key}
+      POD_CONTROL_PLANE_TOKEN: ${POD_CONTROL_PLANE_TOKEN:-pod-dev-control-plane-token}
     ports:
       - "${POD_SNAPSHOT_PORT:-18081}:8081"
     volumes:
-      - pod_keys:/var/lib/pod/keys
-      - pod_snapshots:/var/lib/pod/snapshots
+      - pod_private_keys:/var/lib/pod/private_keys
+      - pod_public_keys:/var/lib/pod/public_keys
+      - pod_state:/var/lib/pod/state
 
   litellm-gateway:
     build:
@@ -110,20 +116,20 @@ services:
     depends_on:
       - snapshot-publisher
     environment:
-      POD_KEY_DIR: /var/lib/pod/keys
-      POD_SNAPSHOT_FILE: /var/lib/pod/snapshots/pod_snapshot.dsse.json
-      POD_LLM_CONFIG_FILE: /var/lib/pod/data/llm_provider_config.json
+      POD_PUBLIC_KEY_DIR: /var/lib/pod/public_keys
+      POD_SNAPSHOT_FILE: /var/lib/pod/state/snapshots/pod_snapshot.dsse.json
+      POD_LLM_CONFIG_FILE: /tmp/llm_provider_config.json
       POD_PREVALIDATOR_MODE: ${POD_PREVALIDATOR_MODE:-enforce}
       POD_UPSTREAM_GATEWAY_URL: ${POD_UPSTREAM_GATEWAY_URL:-http://litellm-gateway:4000}
       POD_ADMIN_API_KEY: ${POD_ADMIN_API_KEY:-pod-dev-admin-key}
+      POD_CONTROL_PLANE_TOKEN: ${POD_CONTROL_PLANE_TOKEN:-pod-dev-control-plane-token}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
       - "${POD_PREVALIDATOR_PORT:-18082}:8082"
     volumes:
-      - pod_keys:/var/lib/pod/keys:ro
-      - pod_snapshots:/var/lib/pod/snapshots:ro
-      - pod_registry_state:/var/lib/pod/data
+      - pod_public_keys:/var/lib/pod/public_keys:ro
+      - pod_state:/var/lib/pod/state:ro
       - d:/attestation:/host_workspace
       - C:/Users/chuck:/host_user:ro
       - d:/:/host_d:ro
@@ -143,15 +149,17 @@ services:
         condition: service_started
     environment:
       POD_REGISTRY_DB_URL: postgresql+psycopg2://pod:pod_password@postgres:5432/pod_registry
-      POD_KEY_DIR: /var/lib/pod/keys
-      POD_SNAPSHOT_FILE: /var/lib/pod/snapshots/pod_snapshot.dsse.json
-      POD_ESTATE_DIR: /var/lib/pod/data/estate
+      POD_REGISTRY_SERVICE_URL: http://registry:8080
+      POD_SNAPSHOT_PUBLISHER_URL: http://snapshot-publisher:8081
+      POD_PUBLIC_KEY_DIR: /var/lib/pod/public_keys
+      POD_SNAPSHOT_FILE: /var/lib/pod/state/snapshots/pod_snapshot.dsse.json
+      POD_ESTATE_DIR: /var/lib/pod/state/estate
       POD_PREVALIDATOR_URL: http://prevalidator:8082
       POD_ADMIN_API_KEY: ${POD_ADMIN_API_KEY:-pod-dev-admin-key}
+      POD_CONTROL_PLANE_TOKEN: ${POD_CONTROL_PLANE_TOKEN:-pod-dev-control-plane-token}
     volumes:
-      - pod_keys:/var/lib/pod/keys
-      - pod_registry_state:/var/lib/pod/data
-      - pod_snapshots:/var/lib/pod/snapshots
+      - pod_public_keys:/var/lib/pod/public_keys:ro
+      - pod_state:/var/lib/pod/state
       - d:/attestation:/host_workspace
       - C:/Users/chuck:/host_user
       - d:/:/host_d
@@ -162,6 +170,6 @@ services:
 volumes:
   pod_postgres_data:
   pod_opensearch_data:
-  pod_keys:
-  pod_registry_state:
-  pod_snapshots:
+  pod_private_keys:
+  pod_public_keys:
+  pod_state:

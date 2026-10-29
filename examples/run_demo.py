@@ -101,7 +101,7 @@ def run_end_to_end_demo(work_dir: Path | None = None) -> dict[str, Any]:
                 "role": "user",
                 "content": (
                     "Summarize this document: "
-                    f'<pod:object locator="file://estate/fileshare/product_overview_public.md" sha256="{pub_rec["content_sha256"]}">'
+                    '<pod:object locator="file://estate/fileshare/product_overview_public.md">'
                     "Open Source AI Architecture Overview"
                     "</pod:object>"
                 ),

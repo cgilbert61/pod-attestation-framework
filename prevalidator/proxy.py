@@ -1589,8 +1589,8 @@ def create_prevalidator_app(
     logo_path = Path(__file__).resolve().parent / "g1_logo.png"
 
     if enforcer is None:
-        key_dir = Path(os.environ.get("POD_KEY_DIR", "./.pod_keys"))
-        keyring = Keyring(key_dir)
+        pub_key_dir = Path(os.environ.get("POD_PUBLIC_KEY_DIR") or os.environ.get("POD_KEY_DIR", "./.pod_keys"))
+        keyring = Keyring(public_key_dir=pub_key_dir, verification_only=True)
         store = InMemorySnapshotStore(keyring)
         snap_path = Path(snapshot_file or os.environ.get("POD_SNAPSHOT_FILE", "./pod_snapshot.dsse.json"))
         if snap_path.exists():
@@ -1601,6 +1601,7 @@ def create_prevalidator_app(
     upstream_url = (upstream_gateway_url or os.environ.get("POD_UPSTREAM_GATEWAY_URL", "mock://local")).rstrip("/")
     engine_url = (engine_service_url or os.environ.get("POD_ENGINE_SERVICE_URL", "http://engine:8083")).rstrip("/")
     admin_key = os.environ.get("POD_ADMIN_API_KEY", "pod-dev-admin-key")
+    control_token = os.environ.get("POD_CONTROL_PLANE_TOKEN", "pod-dev-control-plane-token")
     llm_config_file = Path(os.environ.get("POD_LLM_CONFIG_FILE", "./llm_provider_config.json"))
 
     llm_config: dict[str, Any] = {
@@ -1813,10 +1814,15 @@ def create_prevalidator_app(
                     }
                 ],
             }
-            outcome = enforcer.evaluate_request(
-                payload=sim_payload,
-                headers={"X-POD-Caller-Key": caller_key},
-            )
+            prev_strict = enforcer.strict_inline_hash
+            enforcer.strict_inline_hash = False
+            try:
+                outcome = enforcer.evaluate_request(
+                    payload=sim_payload,
+                    headers={"X-POD-Caller-Key": caller_key},
+                )
+            finally:
+                enforcer.strict_inline_hash = prev_strict
             reasons = outcome.audit_entry.reason_codes
             is_clean_pass = len(reasons) == 0 and outcome.allowed_to_forward
             is_observe_mode = enforcer.mode == "observe"
@@ -2160,9 +2166,25 @@ def create_prevalidator_app(
         return {"mode": enforcer.mode}
 
     @app.post("/v1/admin/reload-snapshot")
-    async def reload_snapshot(request: Request, x_pod_admin_key: str | None = Header(default=None)) -> dict[str, Any]:
-        if x_pod_admin_key != admin_key:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid X-POD-Admin-Key")
+    async def reload_snapshot(
+        request: Request,
+        x_pod_admin_key: str | None = Header(default=None),
+        x_pod_control_token: str | None = Header(default=None),
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        bearer = None
+        if authorization and authorization.lower().startswith("bearer "):
+            bearer = authorization[7:].strip()
+        valid_tokens = {t for t in (admin_key, control_token) if t}
+        if not (
+            (x_pod_admin_key and x_pod_admin_key in valid_tokens)
+            or (x_pod_control_token and x_pod_control_token in valid_tokens)
+            or (bearer and bearer in valid_tokens)
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Unauthorized control-plane request: valid X-POD-Control-Token or Bearer token required.",
+            )
         body = await request.json()
         if "envelope" in body:
             pred = enforcer.snapshot_store.load_from_envelope(body["envelope"])

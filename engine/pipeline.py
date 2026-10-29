@@ -98,6 +98,8 @@ class AttestationEngine:
             size_bytes=doc.size_bytes,
             row_count=doc.row_count,
             fingerprint_method="raw_bytes_sha256",
+            extracted_text_sha256=doc.extracted_text_sha256,
+            chunk_hashes=doc.chunk_hashes,
             classifier_engine=verdict.classifier_engine,
         )
 

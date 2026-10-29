@@ -80,26 +80,39 @@ class EngineDaemonState:
 
 def create_engine_app() -> FastAPI:
     db_url = os.environ.get("POD_REGISTRY_DB_URL", "postgresql+psycopg2://pod:pod_password@postgres:5432/pod_registry")
-    key_dir = Path(os.environ.get("POD_KEY_DIR", "/var/lib/pod/keys"))
-    snapshot_file = Path(os.environ.get("POD_SNAPSHOT_FILE", "/var/lib/pod/snapshots/pod_snapshot.dsse.json"))
-    estate_dir = Path(os.environ.get("POD_ESTATE_DIR", "/var/lib/pod/data/estate"))
+    snapshot_file = Path(os.environ.get("POD_SNAPSHOT_FILE", "/var/lib/pod/state/snapshots/pod_snapshot.dsse.json"))
+    estate_dir = Path(os.environ.get("POD_ESTATE_DIR", "/var/lib/pod/state/estate"))
     prevalidator_url = os.environ.get("POD_PREVALIDATOR_URL", "http://prevalidator:8082")
+    snapshot_publisher_url = os.environ.get("POD_SNAPSHOT_PUBLISHER_URL", "").rstrip("/")
     admin_key = os.environ.get("POD_ADMIN_API_KEY", "pod-dev-admin-key")
+    control_token = os.environ.get("POD_CONTROL_PLANE_TOKEN", "pod-dev-control-plane-token")
     scan_interval = int(os.environ.get("POD_SCAN_INTERVAL_SECONDS", "60"))
 
-    registry = RegistryService(db_url=db_url, key_dir=key_dir)
+    registry = RegistryService(db_url=db_url)
     engine = AttestationEngine(registry=registry)
     dlp_connector = PurviewMultiCloudConnector(registry=registry, classifier=engine.classifier)
-    publisher = SnapshotPublisher(registry=registry, ttl_seconds=3600, snapshot_output_path=snapshot_file)
+    publisher = None if snapshot_publisher_url else SnapshotPublisher(registry=registry, ttl_seconds=3600, snapshot_output_path=snapshot_file)
     state = EngineDaemonState()
 
     def _publish_and_reload_prevalidator() -> dict[str, Any]:
-        env = publisher.publish_snapshot()
+        ctrl_headers = {
+            "X-POD-Control-Token": control_token,
+            "X-POD-Admin-Key": admin_key,
+            "Authorization": f"Bearer {control_token}",
+        }
+        if snapshot_publisher_url:
+            with httpx.Client(timeout=10.0) as client:
+                r_pub = client.post(f"{snapshot_publisher_url}/v1/publish", headers=ctrl_headers)
+                r_pub.raise_for_status()
+                env = r_pub.json()
+        else:
+            assert publisher is not None
+            env = publisher.publish_snapshot()
         try:
             with httpx.Client(timeout=5.0) as client:
                 client.post(
                     f"{prevalidator_url.rstrip('/')}/v1/admin/reload-snapshot",
-                    headers={"X-POD-Admin-Key": admin_key},
+                    headers=ctrl_headers,
                     json={"envelope": env},
                 )
         except Exception:

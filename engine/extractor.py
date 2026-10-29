@@ -8,7 +8,7 @@ import json
 import os
 import zipfile
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -21,7 +21,11 @@ try:
 except ImportError:
     HAS_OPENPYXL = False
 
-from registry.signing import compute_file_sha256
+from registry.signing import (
+    compute_extracted_text_and_chunk_hashes,
+    compute_file_sha256,
+    normalize_canonical_text,
+)
 
 
 @dataclass
@@ -37,6 +41,8 @@ class ExtractedDocument:
     text: str
     metadata: dict[str, Any]
     extractor_used: str
+    extracted_text_sha256: str = ""
+    chunk_hashes: list[str] = field(default_factory=list)
 
 
 class TikaDocumentExtractor:
@@ -73,6 +79,7 @@ class TikaDocumentExtractor:
         tika_result = self._try_tika_server(path)
         if tika_result is not None:
             text, meta, row_count = tika_result
+            extracted_text_sha256, chunk_hashes = compute_extracted_text_and_chunk_hashes(text)
             return ExtractedDocument(
                 locator=locator,
                 file_path=path,
@@ -83,10 +90,13 @@ class TikaDocumentExtractor:
                 text=text,
                 metadata=meta,
                 extractor_used="apache-tika-server",
+                extracted_text_sha256=extracted_text_sha256,
+                chunk_hashes=chunk_hashes,
             )
 
         # 2. Deterministic content extraction for spreadsheets (.xlsx, .csv) and documents (.docx, .txt, .md, .json)
         text, meta, row_count = self._extract_local_content(path, suffix)
+        extracted_text_sha256, chunk_hashes = compute_extracted_text_and_chunk_hashes(text)
         return ExtractedDocument(
             locator=locator,
             file_path=path,
@@ -97,6 +107,8 @@ class TikaDocumentExtractor:
             text=text,
             metadata=meta,
             extractor_used="apache-tika-local",
+            extracted_text_sha256=extracted_text_sha256,
+            chunk_hashes=chunk_hashes,
         )
 
     def _try_tika_server(self, path: Path) -> tuple[str, dict[str, Any], int | None] | None:
