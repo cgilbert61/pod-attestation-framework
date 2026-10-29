@@ -22,8 +22,14 @@ from engine.directory_bridge import (
     decode_uploaded_files_to_temp,
     discover_selectable_drives_and_directories,
     ensure_sample_pc_demo_folder,
+    iter_scannable_files,
     list_pc_subdirectories,
     resolve_pc_directory_path,
+)
+from engine.dlp_connectors import (
+    PurviewMultiCloudConnector,
+    create_purview_labeled_docx,
+    extract_purview_label_from_file,
 )
 from engine.pipeline import AttestationEngine
 from examples.docker_bootstrap import main as run_bootstrap
@@ -83,6 +89,7 @@ def create_engine_app() -> FastAPI:
 
     registry = RegistryService(db_url=db_url, key_dir=key_dir)
     engine = AttestationEngine(registry=registry)
+    dlp_connector = PurviewMultiCloudConnector(registry=registry, classifier=engine.classifier)
     publisher = SnapshotPublisher(registry=registry, ttl_seconds=3600, snapshot_output_path=snapshot_file)
     state = EngineDaemonState()
 
@@ -152,7 +159,7 @@ def create_engine_app() -> FastAPI:
                 await task
             registry.close()
 
-    app = FastAPI(title="G1 Docket by G1183RT Security Labs — Attestation Engine Service", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="G1 Docket by G1163RT Security Labs — Attestation Engine Service", version="0.1.0", lifespan=lifespan)
 
     @app.get("/", include_in_schema=False)
     def root() -> RedirectResponse:
@@ -331,6 +338,112 @@ def create_engine_app() -> FastAPI:
             "file_name": fname,
             "host_directory": req.directory_path,
             "expected_locator": f"{locator_base}/{fname}",
+        }
+
+    @app.get("/v1/dlp/config")
+    def get_dlp_config() -> dict[str, Any]:
+        return dlp_connector.get_public_config()
+
+    @app.post("/v1/dlp/config")
+    def update_dlp_config(payload: dict[str, Any]) -> dict[str, Any]:
+        return dlp_connector.update_config(payload)
+
+    @app.post("/v1/dlp/stage1-inspect-labels")
+    def dlp_stage1_inspect_labels(payload: dict[str, Any]) -> dict[str, Any]:
+        """Stage 1 (Labels-First Fast Lane): Read embedded Purview / MIP sensitivity labels off files in a directory."""
+        raw_dir = payload.get("directory_path") or "C:\\Users\\chuck\\pc_demo_folder"
+        try:
+            target_dir, locator_base = resolve_pc_directory_path(raw_dir)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+        inspected: list[dict[str, Any]] = []
+        labeled_count = 0
+        for fpath in iter_scannable_files(target_dir, max_files=100):
+            res = extract_purview_label_from_file(fpath)
+            rel = fpath.relative_to(target_dir).as_posix()
+            if res.has_label:
+                labeled_count += 1
+            inspected.append(
+                {
+                    "file_name": rel,
+                    "locator": f"{locator_base.rstrip('/')}/{rel}",
+                    "has_label": res.has_label,
+                    "raw_label_name": res.raw_label_name or "No Embedded Label",
+                    "label_guid": res.label_guid or "-",
+                    "mapped_tier": res.mapped_tier or "Fallback to Presidio Content Scan",
+                    "source_property": res.source_property or "-",
+                }
+            )
+        summary = (
+            f"Stage 1 (Labels-First Fast Lane) scanned {len(inspected)} file(s) in '{raw_dir}': "
+            f"Found {labeled_count} file(s) with embedded Microsoft Purview / MIP sensitivity labels (mapped 1:1 to G1 Docket tiers with zero API calls) "
+            f"and {len(inspected) - labeled_count} unlabeled file(s) routed to Presidio content recognizers."
+        )
+        return {
+            "directory": raw_dir,
+            "total_files": len(inspected),
+            "labeled_files_count": labeled_count,
+            "english_summary": summary,
+            "files": inspected,
+        }
+
+    @app.post("/v1/dlp/stage1-stamp-sample")
+    def dlp_stage1_stamp_sample(payload: dict[str, Any]) -> dict[str, Any]:
+        """Create a new .docx file stamped with an authentic Microsoft Purview sensitivity label in the target directory."""
+        raw_dir = payload.get("directory_path") or "C:\\Users\\chuck\\pc_demo_folder"
+        purview_label = payload.get("purview_label") or "Highly Confidential"
+        try:
+            target_dir, locator_base = resolve_pc_directory_path(raw_dir)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+        slug = purview_label.lower().replace(" ", "_")
+        fname = payload.get("filename") or f"purview_stamped_{slug}_{uuid.uuid4().hex[:4]}.docx"
+        out_path = create_purview_labeled_docx(
+            target_dir / fname,
+            paragraphs=[
+                f"Microsoft Purview Sensitivity Label: {purview_label}",
+                "Stamped into docProps/custom.xml via MSIP_Label custom property.",
+                "G1 Docket Stage 1 reads this label directly off the file with zero tenant API calls.",
+            ],
+            purview_label_name=purview_label,
+        )
+        return {
+            "created": True,
+            "file_name": out_path.name,
+            "purview_label": purview_label,
+            "directory": raw_dir,
+            "locator": f"{locator_base.rstrip('/')}/{out_path.name}",
+        }
+
+    @app.post("/v1/dlp/stage2-pull-catalog")
+    def dlp_stage2_pull_catalog(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Stage 2 (Pull Purview & Multi-Cloud Catalog): Pull classifications across clouds, funnel through evaluate_findings, issue signed records, and publish snapshot."""
+        if payload:
+            dlp_connector.update_config(payload)
+        result = dlp_connector.pull_and_attest_catalog()
+        _publish_and_reload_prevalidator()
+        state.last_scan_at = format_iso8601(datetime.now(timezone.utc))
+        state.scans_completed += 1
+        return result
+
+    @app.post("/v1/dlp/stage3-writeback")
+    def dlp_stage3_writeback() -> dict[str, Any]:
+        """Stage 3 (Catalog Write-Back): Annotate G1 Docket's signed tier, record_id, and expiry back into Purview's Data Map catalog."""
+        result = dlp_connector.run_writeback_for_all_catalog_assets()
+        _publish_and_reload_prevalidator()
+        return {
+            "writeback_completed": True,
+            "writebacks_performed": result["writebacks_performed"],
+            "english_summary": (
+                f"Stage 3 Write-Back complete: Annotated {result['writebacks_performed']} signed G1 Docket attestation record(s) "
+                f"(tier, record_id, SHA-256, and expiry) back into Microsoft Purview Data Map businessmetadata across "
+                f"{len(result['clouds_scanned'])} cloud source(s) ({', '.join(result['clouds_scanned'])})."
+            ),
+            "writeback_results": result.get("writeback_results", []),
+            "writeback_history": dlp_connector.writeback_history[-20:],
+            "sync_summary": result,
         }
 
     @app.post("/v1/scan")

@@ -412,6 +412,20 @@ def ensure_sample_pc_demo_folder(target_dir: str | Path) -> Path:
         encoding="utf-8",
     )
 
+    purview_docx_path = root / "07_purview_labeled_board_strategy.docx"
+    if not purview_docx_path.exists():
+        from engine.dlp_connectors import create_purview_labeled_docx
+
+        create_purview_labeled_docx(
+            purview_docx_path,
+            paragraphs=[
+                "FY27 Corporate Strategy & Board Briefing",
+                "This document contains no regex PII patterns, but carries an embedded Microsoft Purview MSIP Sensitivity Label (Confidential) in docProps/custom.xml.",
+                "G1 Docket Stage 1 (Labels-First Fast Lane) reads the Purview sensitivity label directly off the file.",
+            ],
+            purview_label_name="Confidential",
+        )
+
     return root
 
 

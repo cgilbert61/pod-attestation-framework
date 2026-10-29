@@ -2,13 +2,13 @@
   <img src="prevalidator/g1_logo.png" alt="G1 Logo" width="110" />
 </p>
 
-# G1 Docket — by G1183RT Security Labs
+# G1 Docket — by G1163RT Security Labs
 
-**Cryptographic Proof Of Data (POD) Attestation Framework & Zero-DB-Call AI Gateway Prevalidator (`v0.1`) — G1183RT Security Labs / G1163RT Security Labs.**
+**Cryptographic Proof Of Data (POD) Attestation Framework & Zero-DB-Call AI Gateway Prevalidator (`v0.1`) — G1163RT Security Labs.**
 
 AI gateways govern requests. Nothing attests the data those requests touch. **G1 Docket** closes that gap with three components and one open contract:
 
-1. **The Attestation Engine (`engine/`)** — Discovers data where it lives (files, spreadsheets, databases via Apache Tika and OpenMetadata), classifies it with Microsoft Presidio (recording sensitive entity types and counts, never raw values), and issues a DSSE-signed in-toto v1 attestation record per object.
+1. **The Attestation Engine (`engine/`)** — Discovers data where it lives (files, spreadsheets, databases via Apache Tika, OpenMetadata, and the **3-Stage Microsoft Purview & Multi-Cloud DLP Connector**), classifies it with Microsoft Presidio and embedded sensitivity labels (recording sensitive entity types and counts, never raw values), and issues a DSSE-signed in-toto v1 attestation record per object.
 2. **The Registry (`registry/`)** — The authoritative catalog of signed records on PostgreSQL/SQLAlchemy, enforcing tier-based expiry (`Restricted`: 30d, `Confidential`: 90d, `Internal`: 180d, `Public`: 365d), human-review queues for `Restricted` and low-confidence findings, immediate tier elevation, dual-approval tier lowering, and re-classification on content hash drift.
 3. **The Signed Snapshot Publisher (`snapshot/`) & Consumer Conformance Suite (`conformance/`)** — Publishes short-TTL, DSSE-signed snapshots with monotonic sequence numbers and active + `expired`/`revoked` tombstones so downstream consumers enforce policy in memory with zero Registry calls in the request path.
 4. **The Prevalidator (`prevalidator/`)** — A fast proxy placed in front of any AI gateway speaking standard OpenAI (`/v1/chat/completions`) or Anthropic (`/v1/messages`) formats (including SSE streaming). It evaluates `<pod:object>` blocks and request headers against the in-memory snapshot to forward, strip, or refuse requests before the gateway sees them.

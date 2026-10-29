@@ -5,8 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from engine.classifier import PresidioClassifier
+from engine.classifier import CategoryFinding, PresidioClassifier
 from engine.directory_bridge import iter_scannable_files
+from engine.dlp_connectors import extract_purview_label_from_file
 from engine.extractor import TikaDocumentExtractor
 from engine.openlineage_intake import OpenLineageIntake
 from engine.openmetadata_connector import OpenMetadataDatabaseScanner
@@ -53,7 +54,31 @@ class AttestationEngine:
         if existing and not force_rescan and existing["content_sha256"] == doc.content_sha256:
             return {"action": "unchanged", "record": existing, "review": None}
 
-        verdict = self.classifier.classify_text(doc.text)
+        # Stage 1 (Labels-First Fast Lane): Read embedded Purview / MIP sensitivity label directly off the file if present
+        embedded_label = extract_purview_label_from_file(file_path, doc.metadata)
+        findings = self.classifier.scan_text_segment(doc.text)
+        metadata_hints: dict[str, Any] = {}
+        classifier_engine_label = "presidio"
+        source_sys_label = f"{doc.extractor_used}+presidio"
+        if embedded_label.has_label and embedded_label.mapped_tier:
+            findings.append(
+                CategoryFinding(
+                    category=f"PURVIEW_LABEL_{embedded_label.mapped_tier.upper()}",
+                    count=1,
+                    max_confidence=0.99,
+                    column_or_field=embedded_label.source_property or "msip_label",
+                )
+            )
+            metadata_hints["default_tier"] = embedded_label.mapped_tier
+            metadata_hints["purview_label"] = embedded_label.raw_label_name
+            classifier_engine_label = "msip-purview-label+presidio"
+            source_sys_label = f"{doc.extractor_used}+msip-purview-label"
+
+        verdict = self.classifier.evaluate_findings(
+            findings=findings,
+            metadata_hints=metadata_hints,
+            classifier_engine=classifier_engine_label,
+        )
         derived_from = self.lineage_intake.get_derived_from(locator)
 
         return self.registry.issue_or_queue_finding(
@@ -68,7 +93,7 @@ class AttestationEngine:
             display_name=doc.file_path.name,
             environment=environment,
             attested_by=self.engine_id,
-            source_system=f"{doc.extractor_used}+presidio",
+            source_system=source_sys_label,
             derived_from=derived_from,
             size_bytes=doc.size_bytes,
             row_count=doc.row_count,
