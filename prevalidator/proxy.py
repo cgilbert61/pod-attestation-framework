@@ -143,7 +143,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       </span>
       <a href="/dlp" class="btn" style="background: #7c3aed; color: #ffffff; text-decoration: none; margin-left: 0;">&#9729; DLP Connectors (Purview / Cloud)</a>
       <button class="btn" style="background: #2563eb;" onclick="toggleLlmConfig()">&#9881; LLM Provider Config</button>
-      <button class="btn btn-dark" onclick="toggleMode()">Toggle Enforce / Observe Mode</button>
+      <button id="toggleModeBtn" class="btn" style="background: #059669; color: #ffffff;" onclick="toggleMode()">&#128737; Mode: ENFORCE (Click &rarr; Observe)</button>
       <a href="/docs" target="_blank">Prevalidator API</a>
       <a href="http://localhost:18083/docs" target="_blank">Engine API (:18083)</a>
       <a href="http://localhost:18080/docs" target="_blank">Registry API (:18080)</a>
@@ -732,7 +732,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       tbody.innerHTML = '';
       (data.files || []).forEach(f => {
         const tr = document.createElement('tr');
-        const verdictBadge = f.passed ? 'badge-PASS' : 'badge-FAIL';
+        const verdictBadge = f.verdict.startsWith('OBSERVED') ? 'badge-Confidential' : (f.passed ? 'badge-PASS' : 'badge-FAIL');
         const tierBadge = f.tier && f.tier !== 'NONE' ? `badge-${f.tier}` : 'badge-FAIL';
         tr.innerHTML = `<td><strong>${f.file_name}</strong></td>
           <td><code>${f.attestation_state}</code></td>
@@ -772,8 +772,20 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       const h = await (await fetch('/healthz')).json();
       currentMode = h.mode;
       const badge = document.getElementById('modeBadge');
-      badge.textContent = currentMode.toUpperCase() + ' MODE';
+      badge.textContent = currentMode === 'enforce' ? 'ENFORCE MODE (BLOCKING)' : 'OBSERVE MODE (AUDIT-ONLY)';
       badge.className = 'badge ' + (currentMode === 'enforce' ? 'badge-Public' : 'badge-Confidential');
+      const modeBtn = document.getElementById('toggleModeBtn');
+      if (modeBtn) {
+        if (currentMode === 'enforce') {
+          modeBtn.style.background = '#059669';
+          modeBtn.style.color = '#ffffff';
+          modeBtn.innerHTML = '&#128737; Mode: ENFORCE (Click &rarr; Observe)';
+        } else {
+          modeBtn.style.background = '#d97706';
+          modeBtn.style.color = '#ffffff';
+          modeBtn.innerHTML = '&#128065; Mode: OBSERVE (Click &rarr; Enforce)';
+        }
+      }
 
       const snapResp = await (await fetch('/v1/admin/snapshot-view', { headers: { 'X-POD-Admin-Key': ADMIN_KEY } })).json();
       if (snapResp.snapshot) {
@@ -815,6 +827,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
         body: JSON.stringify({ mode: next })
       });
       await refreshState();
+      await prevalidateSelectedDirectory();
     }
 
     async function sendRequest() {
@@ -1805,23 +1818,31 @@ def create_prevalidator_app(
                 headers={"X-POD-Caller-Key": caller_key},
             )
             reasons = outcome.audit_entry.reason_codes
-            is_pass = len(reasons) == 0 and outcome.allowed_to_forward
+            is_clean_pass = len(reasons) == 0 and outcome.allowed_to_forward
+            is_observe_mode = enforcer.mode == "observe"
+            is_pass = is_clean_pass or (is_observe_mode and outcome.allowed_to_forward)
 
             if not snap_entry:
                 att_state = "UNATTESTED"
                 tier = "NONE"
                 unattested_count += 1
-                reason_detail = "UNATTESTED — No signed record in snapshot"
+                if is_observe_mode:
+                    reason_detail = "OBSERVE MODE (FORWARDED + LOGGED) — Unattested file (would block in Enforce Mode)"
+                else:
+                    reason_detail = "UNATTESTED — No signed record in snapshot"
             elif snap_entry["content_sha256"].lower() != obs_sha.lower():
                 att_state = "HASH_DRIFT"
                 tier = snap_entry["tier"]
                 unattested_count += 1
                 hash_drift_count += 1
-                reason_detail = "UNATTESTED — File content SHA-256 modified since attestation"
+                if is_observe_mode:
+                    reason_detail = "OBSERVE MODE (FORWARDED + LOGGED) — File SHA-256 modified (would block in Enforce Mode)"
+                else:
+                    reason_detail = "UNATTESTED — File content SHA-256 modified since attestation"
             else:
                 att_state = f"ATTESTED ({snap_entry['status'].upper()})"
                 tier = snap_entry["tier"]
-                if is_pass:
+                if is_clean_pass:
                     if outcome.audit_entry.decision == "strip":
                         strip_count += 1
                         reason_detail = "PASSED (STRIP) — Confidential content stripped per policy"
@@ -1830,11 +1851,17 @@ def create_prevalidator_app(
                         reason_detail = "PASSED (ALLOW) — Hash & policy verified"
                 else:
                     policy_denied_count += 1
-                    reason_detail = f"BLOCKED — {', '.join(reasons)}"
+                    if is_observe_mode:
+                        reason_detail = f"OBSERVE MODE (FORWARDED + LOGGED) — Would block in Enforce Mode: {', '.join(reasons)}"
+                    else:
+                        reason_detail = f"BLOCKED — {', '.join(reasons)}"
 
-            if is_pass:
+            if is_clean_pass:
                 passed_count += 1
                 verdict = "PASS (STRIP)" if outcome.audit_entry.decision == "strip" else "PASS (ALLOW)"
+            elif is_observe_mode and outcome.allowed_to_forward:
+                passed_count += 1
+                verdict = "OBSERVED (WOULD BLOCK)"
             else:
                 failed_count += 1
                 verdict = "FAILED / BLOCKED"
@@ -1855,13 +1882,14 @@ def create_prevalidator_app(
 
         total_count = len(file_candidates)
         pure_unattested = unattested_count - hash_drift_count
+        mode_tag = "OBSERVE MODE (Audit-Only — Violations Forwarded & Logged)" if enforcer.mode == "observe" else "ENFORCE MODE (Active Blocking)"
         english_summary = (
-            f"Prevalidator scanned {total_count} total file(s) in '{dir_label}': "
-            f"{passed_count} of {total_count} file(s) PASSED ({allow_count} Allowed, {strip_count} Stripped) and "
-            f"{failed_count} of {total_count} file(s) DID NOT PASS "
+            f"[{mode_tag}] Prevalidator scanned {total_count} total file(s) in '{dir_label}': "
+            f"{passed_count} of {total_count} file(s) PASSED/FORWARDED ({allow_count} Clean Allowed, {strip_count} Stripped) and "
+            f"{failed_count} of {total_count} file(s) BLOCKED "
             f"({pure_unattested} Unattested file(s) with no signed record, "
             f"{hash_drift_count} Modified/Hash-drift file(s), "
-            f"{policy_denied_count} Policy/Clearance-blocked file(s))."
+            f"{policy_denied_count} Policy/Clearance violation(s))."
         )
 
         return {
