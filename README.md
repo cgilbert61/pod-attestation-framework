@@ -1,8 +1,12 @@
-# POD — Proof Of Data (v0.1)
+<p align="center">
+  <img src="prevalidator/g1_logo.png" alt="G1 Logo" width="110" />
+</p>
 
-**An independent, Apache-2.0 open-source Data Attestation Framework and AI Gateway Prevalidator.**
+# G1 Docket — by G1183RT Security Labs
 
-AI gateways govern requests. Nothing attests the data those requests touch. **POD (Proof Of Data)** closes that gap with three components and one open contract:
+**Cryptographic Proof Of Data (POD) Attestation Framework & Zero-DB-Call AI Gateway Prevalidator (`v0.1`) — G1183RT Security Labs / G1163RT Security Labs.**
+
+AI gateways govern requests. Nothing attests the data those requests touch. **G1 Docket** closes that gap with three components and one open contract:
 
 1. **The Attestation Engine (`engine/`)** — Discovers data where it lives (files, spreadsheets, databases via Apache Tika and OpenMetadata), classifies it with Microsoft Presidio (recording sensitive entity types and counts, never raw values), and issues a DSSE-signed in-toto v1 attestation record per object.
 2. **The Registry (`registry/`)** — The authoritative catalog of signed records on PostgreSQL/SQLAlchemy, enforcing tier-based expiry (`Restricted`: 30d, `Confidential`: 90d, `Internal`: 180d, `Public`: 365d), human-review queues for `Restricted` and low-confidence findings, immediate tier elevation, dual-approval tier lowering, and re-classification on content hash drift.

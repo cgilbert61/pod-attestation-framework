@@ -152,7 +152,7 @@ def create_engine_app() -> FastAPI:
                 await task
             registry.close()
 
-    app = FastAPI(title="POD Attestation Engine Service", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="G1 Docket by G1183RT Security Labs — Attestation Engine Service", version="0.1.0", lifespan=lifespan)
 
     @app.get("/", include_in_schema=False)
     def root() -> RedirectResponse:

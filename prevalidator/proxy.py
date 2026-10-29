@@ -11,7 +11,7 @@ from typing import Any, AsyncIterator
 
 import httpx
 from fastapi import FastAPI, Header, HTTPException, Query, Request, status
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 
 from engine.directory_bridge import (
     compute_bytes_sha256_hex,
@@ -76,13 +76,20 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>POD — Proof Of Data | Directory Attestation & Prevalidator Console</title>
+  <link rel="icon" type="image/png" href="/assets/g1-logo.png" />
+  <title>G1 Docket by G1183RT Security Labs | Cryptographic Proof Of Data &amp; AI Prevalidator</title>
   <style>
     :root { --bg: #0b1120; --panel: #1e293b; --panel2: #0f172a; --border: #334155; --text: #f8fafc; --muted: #94a3b8; --accent: #10b981; --warn: #f59e0b; --danger: #ef4444; --info: #3b82f6; }
     * { box-sizing: border-box; font-family: system-ui, -apple-system, sans-serif; }
-    body { margin: 0; background: var(--bg); color: var(--text); padding: 20px 28px; }
+    body { margin: 0; background: var(--bg); color: var(--text); padding: 20px 28px; display: flex; flex-direction: column; min-height: 100vh; }
     header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 14px; margin-bottom: 20px; }
-    h1 { margin: 0; font-size: 22px; display: flex; align-items: center; gap: 12px; }
+    .brand-lockup { display: flex; align-items: center; gap: 16px; }
+    .brand-logo { width: 52px; height: 52px; border-radius: 50%; object-fit: cover; border: 2px solid #475569; box-shadow: 0 0 14px rgba(59,130,246,0.35); background: #ffffff; }
+    h1 { margin: 0; font-size: 24px; letter-spacing: 0.3px; display: flex; align-items: center; gap: 12px; }
+    .brand-lab-tag { font-size: 12px; font-weight: 600; color: #93c5fd; letter-spacing: 0.6px; text-transform: uppercase; }
+    footer { margin-top: auto; padding-top: 18px; padding-bottom: 8px; border-top: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; color: var(--muted); font-size: 12.5px; }
+    .footer-brand { display: flex; align-items: center; gap: 10px; }
+    .footer-logo { width: 26px; height: 26px; border-radius: 50%; object-fit: cover; border: 1px solid #475569; background: #ffffff; }
     .badge { padding: 3px 9px; border-radius: 999px; font-size: 11px; font-weight: 700; text-transform: uppercase; display: inline-block; }
     .badge-Public, .badge-PASS { background: rgba(16,185,129,0.2); color: #34d399; border: 1px solid rgba(16,185,129,0.4); }
     .badge-Internal { background: rgba(59,130,246,0.2); color: #60a5fa; border: 1px solid rgba(59,130,246,0.4); }
@@ -116,10 +123,17 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 </head>
 <body>
   <header>
-    <div>
-      <h1>POD — Proof Of Data <span id="modeBadge" class="badge badge-Public">ENFORCE MODE</span></h1>
-      <div style="color: var(--muted); font-size: 13px; margin-top: 4px;">
-        Directory Attestation Engine &amp; Prevalidator Batch Scanner + Live AI Gateway Proxy
+    <div class="brand-lockup">
+      <img src="/assets/g1-logo.png" alt="G1 Logo" class="brand-logo" />
+      <div>
+        <h1>
+          <span>G1 Docket</span>
+          <span class="brand-lab-tag">by G1183RT Security Labs</span>
+          <span id="modeBadge" class="badge badge-Public">ENFORCE MODE</span>
+        </h1>
+        <div style="color: var(--muted); font-size: 13px; margin-top: 4px;">
+          Cryptographic Proof Of Data (POD) Attestation Engine &amp; Zero-DB-Call AI Gateway Prevalidator
+        </div>
       </div>
     </div>
     <div class="links">
@@ -376,6 +390,16 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       </div>
     </div>
   </div>
+
+  <footer>
+    <div class="footer-brand">
+      <img src="/assets/g1-logo.png" alt="G1 Logo" class="footer-logo" />
+      <span><strong>G1 Docket</strong> by <strong>G1183RT Security Labs</strong> &bull; G1163RT Security Labs</span>
+    </div>
+    <div>
+      Cryptographic Proof Of Data (POD) Framework v0.1 &bull; DSSE Signed Provenance &amp; Zero-DB-Call Enforcement
+    </div>
+  </footer>
 
   <script>
     const ADMIN_KEY = "pod-dev-admin-key";
@@ -743,7 +767,8 @@ def create_prevalidator_app(
     engine_service_url: str | None = None,
 ) -> FastAPI:
     """Create the Prevalidator proxy application."""
-    app = FastAPI(title="POD AI Gateway Prevalidator", version="0.1.0")
+    app = FastAPI(title="G1 Docket by G1183RT Security Labs — AI Gateway Prevalidator", version="0.1.0")
+    logo_path = Path(__file__).resolve().parent / "g1_logo.png"
 
     if enforcer is None:
         key_dir = Path(os.environ.get("POD_KEY_DIR", "./.pod_keys"))
@@ -762,6 +787,14 @@ def create_prevalidator_app(
     @app.get("/", response_class=HTMLResponse)
     def root_console() -> str:
         return DASHBOARD_HTML
+
+    @app.get("/assets/g1-logo.png", include_in_schema=False)
+    def serve_g1_logo() -> FileResponse:
+        return FileResponse(logo_path, media_type="image/png")
+
+    @app.get("/favicon.ico", include_in_schema=False)
+    def serve_favicon() -> FileResponse:
+        return FileResponse(logo_path, media_type="image/png")
 
     @app.get("/v1/admin/snapshot-view")
     def get_snapshot_view(x_pod_admin_key: str | None = Header(default=None)) -> dict[str, Any]:
