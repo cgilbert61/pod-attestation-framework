@@ -63,6 +63,18 @@ def create_gateway_app() -> FastAPI:
     def healthz() -> dict[str, str]:
         return {"status": "ok", "service": "pod-demo-ai-gateway"}
 
+    @app.get("/v1/models")
+    def list_models() -> dict[str, Any]:
+        return {
+            "object": "list",
+            "data": [
+                {"id": "local-model", "object": "model", "owned_by": "g1-docket-local"},
+                {"id": "vpc-model", "object": "model", "owned_by": "g1-docket-vpc"},
+                {"id": "gpt-4o", "object": "model", "owned_by": "openai"},
+                {"id": "claude-3-5-sonnet", "object": "model", "owned_by": "anthropic"},
+            ],
+        }
+
     @app.post("/v1/chat/completions")
     async def chat_completions(request: Request) -> Any:
         payload = await request.json()
