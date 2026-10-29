@@ -1,0 +1,3 @@
+date,endpoint,p50_ms,p99_ms
+2026-10-28,/v1/chat/completions,0.14,0.42
+2026-10-29,/v1/messages,0.16,0.48

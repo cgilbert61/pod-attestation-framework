@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.proofofdata.dev/dsse-envelope/v0.1",
+  "title": "DSSE Envelope + Sigstore Local Verification Material v0.1",
+  "description": "Dead Simple Signing Envelope (DSSE v1) carrying an in-toto v1 Statement payload, with optional Sigstore v0.3 verificationMaterial metadata for local operator keys.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["payloadType", "payload", "signatures"],
+  "properties": {
+    "payloadType": {
+      "type": "string",
+      "const": "application/vnd.in-toto+json"
+    },
+    "payload": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Base64-encoded canonical JSON of the in-toto v1 Statement."
+    },
+    "signatures": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["keyid", "sig"],
+        "properties": {
+          "keyid": {
+            "type": "string",
+            "minLength": 8,
+            "description": "Key identifier (SHA-256 hex prefix or full digest of SPKI public key)."
+          },
+          "sig": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Base64-encoded cryptographic signature over DSSEv1 PAE."
+          }
+        }
+      }
+    },
+    "sigstoreBundle": {
+      "type": "object",
+      "description": "Sigstore bundle v0.3 compatible metadata for local in-boundary verification keys.",
+      "additionalProperties": false,
+      "required": ["mediaType", "verificationMaterial"],
+      "properties": {
+        "mediaType": {
+          "type": "string",
+          "const": "application/vnd.dev.sigstore.bundle.v0.3+json"
+        },
+        "verificationMaterial": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["publicKey"],
+          "properties": {
+            "publicKey": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["hint", "algorithm"],
+              "properties": {
+                "hint": { "type": "string" },
+                "algorithm": {
+                  "type": "string",
+                  "enum": ["Ed25519", "ECDSA_P256_SHA256"]
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

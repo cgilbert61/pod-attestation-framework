@@ -1,0 +1,345 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.proofofdata.dev/attestation/v0.1",
+  "title": "POD Attestation Predicate Schema v0.1",
+  "description": "Predicate schema for POD (Proof Of Data) in-toto v1 Statements wrapped in a DSSE envelope. Comprises 32 fields across 7 groups (identity, ownership, provenance, integrity, classification, handling, lifecycle) with 7 mandatory root-level requirements.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "identity",
+    "ownership",
+    "provenance",
+    "integrity",
+    "classification",
+    "handling",
+    "lifecycle"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "0.1.0",
+      "default": "0.1.0",
+      "description": "Semantic version of the POD attestation predicate schema."
+    },
+    "identity": {
+      "type": "object",
+      "description": "Group 1: Canonical object identity and storage metadata.",
+      "additionalProperties": false,
+      "required": ["locator"],
+      "properties": {
+        "record_id": {
+          "type": "string",
+          "pattern": "^pod-rec-[a-zA-Z0-9_-]{8,64}$",
+          "description": "Unique identifier for this attestation record."
+        },
+        "locator": {
+          "type": "string",
+          "minLength": 5,
+          "pattern": "^[a-z][a-z0-9+.-]*://.+$",
+          "description": "MANDATORY (1/7): Canonical URI locating the data object (e.g., file:///share/hr/comp.xlsx, postgres://db:5432/prod/public/customers)."
+        },
+        "object_type": {
+          "type": "string",
+          "enum": [
+            "file",
+            "document",
+            "spreadsheet",
+            "database_table",
+            "database_view",
+            "warehouse_table",
+            "object_store_prefix",
+            "vector_collection"
+          ],
+          "description": "Structural category of the attested data object."
+        },
+        "display_name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Human-readable name of the object."
+        },
+        "environment": {
+          "type": "string",
+          "enum": ["production", "staging", "development", "sandbox", "synthetic"],
+          "default": "production",
+          "description": "Deployment environment where the object resides."
+        }
+      }
+    },
+    "ownership": {
+      "type": "object",
+      "description": "Group 2: Accountable ownership and governance attribution.",
+      "additionalProperties": false,
+      "required": ["owner"],
+      "properties": {
+        "owner": {
+          "type": "string",
+          "minLength": 2,
+          "description": "MANDATORY (2/7): Accountable owner identifier (principal URI, email, or team identifier)."
+        },
+        "steward": {
+          "type": ["string", "null"],
+          "description": "Data steward responsible for day-to-day classification review."
+        },
+        "org_unit": {
+          "type": ["string", "null"],
+          "description": "Organizational unit or department owning the asset."
+        },
+        "jurisdiction": {
+          "type": ["string", "null"],
+          "description": "Regulatory or geographic residency jurisdiction (e.g., US, EU, GLOBAL)."
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "description": "Group 3: Discovery origin, scanner identity, and OpenLineage upstream links.",
+      "additionalProperties": false,
+      "required": ["attested_by"],
+      "properties": {
+        "attested_by": {
+          "type": "string",
+          "minLength": 2,
+          "description": "MANDATORY (3/7): Identifier of the attestation engine instance that produced the verdict."
+        },
+        "source_system": {
+          "type": "string",
+          "description": "Discovery mechanism or catalog source (e.g., openmetadata, tika-fileshare-crawler)."
+        },
+        "scanner_version": {
+          "type": "string",
+          "description": "Version string of the discovery and classification pipeline."
+        },
+        "discovered_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO-8601 UTC timestamp when the object was scanned."
+        },
+        "derived_from": {
+          "type": "array",
+          "description": "Upstream object locators recorded via OpenLineage events.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["locator"],
+            "properties": {
+              "locator": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9+.-]*://.+$"
+              },
+              "record_id": {
+                "type": ["string", "null"]
+              },
+              "lineage_run_id": {
+                "type": ["string", "null"]
+              }
+            }
+          }
+        }
+      }
+    },
+    "integrity": {
+      "type": "object",
+      "description": "Group 4: Cryptographic content and schema fingerprints.",
+      "additionalProperties": false,
+      "required": ["content_sha256"],
+      "properties": {
+        "content_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$",
+          "description": "MANDATORY (4/7): Lowercase hex SHA-256 fingerprint of the object content (must match in-toto subject digest)."
+        },
+        "schema_sha256": {
+          "type": ["string", "null"],
+          "pattern": "^[a-f0-9]{64}$",
+          "description": "Lowercase hex SHA-256 digest of canonical DDL/column schema for structured tables."
+        },
+        "size_bytes": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "description": "Byte size of the file or table sample at attestation time."
+        },
+        "row_count": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "description": "Row count at attestation time for structured tables or spreadsheets."
+        },
+        "fingerprint_method": {
+          "type": "string",
+          "enum": [
+            "raw_bytes_sha256",
+            "table_schema_and_canonical_rows_sha256",
+            "table_schema_and_sample_sha256"
+          ],
+          "default": "raw_bytes_sha256",
+          "description": "Deterministic method used to compute content_sha256."
+        }
+      }
+    },
+    "classification": {
+      "type": "object",
+      "description": "Group 5: Authoritative sensitivity tier and detected entity category counts (never raw values).",
+      "additionalProperties": false,
+      "required": ["tier"],
+      "properties": {
+        "tier": {
+          "type": "string",
+          "enum": ["Public", "Internal", "Confidential", "Restricted"],
+          "description": "MANDATORY (5/7): Data classification tier ordered from lowest to highest sensitivity."
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "description": "Aggregate classification confidence score in [0.0, 1.0]."
+        },
+        "sensitive_categories": {
+          "type": "array",
+          "description": "Detected sensitive entity types and counts (NEVER raw sensitive values).",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["category", "count"],
+            "properties": {
+              "category": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Entity type identifier (e.g., US_SSN, EMAIL_ADDRESS, CREDIT_CARD, MEDICAL_LICENSE, API_KEY)."
+              },
+              "count": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Number of occurrences detected."
+              },
+              "max_confidence": {
+                "type": "number",
+                "minimum": 0.0,
+                "maximum": 1.0,
+                "description": "Highest confidence score observed for this category."
+              },
+              "column_or_field": {
+                "type": ["string", "null"],
+                "description": "Column or metadata field name where detected (for tabular objects), never cell content."
+              }
+            }
+          }
+        },
+        "classifier_engine": {
+          "type": "string",
+          "description": "Classifier combination used (e.g., presidio+openmetadata, tika+presidio)."
+        }
+      }
+    },
+    "handling": {
+      "type": "object",
+      "description": "Group 6: Enforcement rules consumed by the Snapshot Publisher and Prevalidator.",
+      "additionalProperties": false,
+      "required": ["policy"],
+      "properties": {
+        "policy": {
+          "type": "object",
+          "description": "MANDATORY (6/7): Core enforcement policy tuple for AI gateways and consumers.",
+          "additionalProperties": false,
+          "required": ["ai_eligibility", "minimum_clearance", "egress_class"],
+          "properties": {
+            "ai_eligibility": {
+              "type": "string",
+              "enum": ["allow", "strip", "deny"],
+              "description": "Whether the object may be forwarded to AI models ('allow'), stripped from prompts ('strip'), or causes request refusal ('deny')."
+            },
+            "minimum_clearance": {
+              "type": "string",
+              "enum": ["Public", "Internal", "Confidential", "Restricted"],
+              "description": "Minimum clearance level required of the caller to reference this object."
+            },
+            "egress_class": {
+              "type": "string",
+              "enum": ["local_only", "private_cloud", "public_api"],
+              "description": "Maximum allowed egress destination class for AI requests touching this object."
+            }
+          }
+        },
+        "allow_rag_indexing": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether downstream vector stores are permitted to embed and index this object."
+        },
+        "allow_model_training": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether this object may be used for fine-tuning or training (always false unless explicitly enabled on Public/Internal)."
+        },
+        "redaction_categories": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Categories that must be redacted if fallback content inspection runs."
+        }
+      }
+    },
+    "lifecycle": {
+      "type": "object",
+      "description": "Group 7: Record validity window, lifecycle state, and dual-approval audit trail.",
+      "additionalProperties": false,
+      "required": ["expires_at"],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["issued", "renewed", "tier_raised", "tier_lowered", "expired", "revoked"],
+          "default": "issued",
+          "description": "Lifecycle state of the signed attestation record."
+        },
+        "issued_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO-8601 UTC timestamp when this record version was issued."
+        },
+        "expires_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "MANDATORY (7/7): ISO-8601 UTC timestamp when this record expires (bounded by tier TTL: Restricted <= 30d, Confidential <= 90d, Internal <= 180d, Public <= 365d)."
+        },
+        "ttl_days": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 365,
+          "description": "Configured time-to-live in days for this record."
+        },
+        "previous_record_id": {
+          "type": ["string", "null"],
+          "description": "ID of the prior record superseded by renewal or tier change."
+        },
+        "revoked_at": {
+          "type": ["string", "null"],
+          "format": "date-time",
+          "description": "ISO-8601 UTC timestamp if revoked."
+        },
+        "revocation_reason": {
+          "type": ["string", "null"],
+          "description": "Reason code or note if revoked."
+        },
+        "tier_lower_approvals": {
+          "type": "array",
+          "description": "Dual-approval records required whenever a record's tier is lowered from a higher sensitivity tier.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["approver_id", "approved_at", "rationale"],
+            "properties": {
+              "approver_id": {
+                "type": "string",
+                "minLength": 2
+              },
+              "approved_at": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "rationale": {
+                "type": "string",
+                "minLength": 3
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,4 @@
+INTERNAL-ONLY Infrastructure Runbook
+Project Identifier: PROJ-KUBE88
+Internal Node IP: 10.42.19.105
+On-Call Engineer ID: EMP-77310

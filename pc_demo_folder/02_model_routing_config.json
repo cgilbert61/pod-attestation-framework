@@ -1,0 +1,5 @@
+{
+  "service": "ai-gateway",
+  "timeout_ms": 5000,
+  "retry_count": 2
+}

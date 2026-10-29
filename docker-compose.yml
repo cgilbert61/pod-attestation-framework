@@ -1,0 +1,163 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    profiles: ["core", "demo", "catalog"]
+    environment:
+      POSTGRES_USER: pod
+      POSTGRES_PASSWORD: pod_password
+      POSTGRES_DB: pod_registry
+    ports:
+      - "${POD_POSTGRES_PORT:-15432}:5432"
+    volumes:
+      - pod_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pod -d pod_registry"]
+      interval: 3s
+      timeout: 3s
+      retries: 15
+
+  opensearch:
+    image: opensearchproject/opensearch:2.11.1
+    profiles: ["catalog"]
+    environment:
+      discovery.type: single-node
+      plugins.security.disabled: "true"
+      OPENSEARCH_JAVA_OPTS: "-Xms512m -Xmx512m"
+    ports:
+      - "${POD_OPENSEARCH_PORT:-19200}:9200"
+    volumes:
+      - pod_opensearch_data:/usr/share/opensearch/data
+
+  openmetadata-server:
+    image: docker.getcollate.io/openmetadata/server:1.5.4
+    profiles: ["catalog"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      opensearch:
+        condition: service_started
+    environment:
+      DB_DRIVER_CLASS: org.postgresql.Driver
+      DB_SCHEME: postgresql
+      DB_USE_SSL: "false"
+      DB_USER: pod
+      DB_USER_PASSWORD: pod_password
+      DB_HOST: postgres
+      DB_PORT: 5432
+      OM_DATABASE: pod_registry
+      ELASTICSEARCH_HOST: opensearch
+      ELASTICSEARCH_PORT: 9200
+    ports:
+      - "${POD_OPENMETADATA_PORT:-18585}:8585"
+
+  tika:
+    image: apache/tika:2.9.1.0
+    profiles: ["catalog"]
+    ports:
+      - "${POD_TIKA_PORT:-19998}:9998"
+
+  registry:
+    build:
+      context: .
+      dockerfile: registry/Dockerfile
+    profiles: ["core", "demo"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      POD_REGISTRY_DB_URL: postgresql+psycopg2://pod:pod_password@postgres:5432/pod_registry
+      POD_KEY_DIR: /var/lib/pod/keys
+      POD_ADMIN_API_KEY: ${POD_ADMIN_API_KEY:-pod-dev-admin-key}
+    ports:
+      - "${POD_REGISTRY_PORT:-18080}:8080"
+    volumes:
+      - pod_keys:/var/lib/pod/keys
+      - pod_registry_state:/var/lib/pod/data
+
+  snapshot-publisher:
+    build:
+      context: .
+      dockerfile: snapshot/Dockerfile
+    profiles: ["core", "demo"]
+    depends_on:
+      - registry
+    environment:
+      POD_REGISTRY_DB_URL: postgresql+psycopg2://pod:pod_password@postgres:5432/pod_registry
+      POD_KEY_DIR: /var/lib/pod/keys
+      POD_SNAPSHOT_FILE: /var/lib/pod/snapshots/pod_snapshot.dsse.json
+      POD_ADMIN_API_KEY: ${POD_ADMIN_API_KEY:-pod-dev-admin-key}
+    ports:
+      - "${POD_SNAPSHOT_PORT:-18081}:8081"
+    volumes:
+      - pod_keys:/var/lib/pod/keys
+      - pod_snapshots:/var/lib/pod/snapshots
+
+  litellm-gateway:
+    build:
+      context: .
+      dockerfile: engine/Dockerfile
+    profiles: ["demo"]
+    entrypoint: ["uvicorn", "examples.local_gateway:create_gateway_app", "--factory", "--host", "0.0.0.0", "--port", "4000"]
+    command: []
+    ports:
+      - "${POD_GATEWAY_PORT:-14000}:4000"
+
+  prevalidator:
+    build:
+      context: .
+      dockerfile: prevalidator/Dockerfile
+    profiles: ["demo", "prevalidator"]
+    depends_on:
+      - snapshot-publisher
+    environment:
+      POD_KEY_DIR: /var/lib/pod/keys
+      POD_SNAPSHOT_FILE: /var/lib/pod/snapshots/pod_snapshot.dsse.json
+      POD_PREVALIDATOR_MODE: ${POD_PREVALIDATOR_MODE:-enforce}
+      POD_UPSTREAM_GATEWAY_URL: ${POD_UPSTREAM_GATEWAY_URL:-http://litellm-gateway:4000}
+      POD_ADMIN_API_KEY: ${POD_ADMIN_API_KEY:-pod-dev-admin-key}
+    ports:
+      - "${POD_PREVALIDATOR_PORT:-18082}:8082"
+    volumes:
+      - pod_keys:/var/lib/pod/keys:ro
+      - pod_snapshots:/var/lib/pod/snapshots:ro
+      - d:/attestation:/host_workspace
+      - C:/Users/chuck:/host_user:ro
+      - d:/:/host_d:ro
+      - C:/:/host_c:ro
+
+  engine:
+    build:
+      context: .
+      dockerfile: engine/Dockerfile
+    profiles: ["core", "demo"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      registry:
+        condition: service_started
+      snapshot-publisher:
+        condition: service_started
+    environment:
+      POD_REGISTRY_DB_URL: postgresql+psycopg2://pod:pod_password@postgres:5432/pod_registry
+      POD_KEY_DIR: /var/lib/pod/keys
+      POD_SNAPSHOT_FILE: /var/lib/pod/snapshots/pod_snapshot.dsse.json
+      POD_ESTATE_DIR: /var/lib/pod/data/estate
+      POD_PREVALIDATOR_URL: http://prevalidator:8082
+      POD_ADMIN_API_KEY: ${POD_ADMIN_API_KEY:-pod-dev-admin-key}
+    volumes:
+      - pod_keys:/var/lib/pod/keys
+      - pod_registry_state:/var/lib/pod/data
+      - pod_snapshots:/var/lib/pod/snapshots
+      - d:/attestation:/host_workspace
+      - C:/Users/chuck:/host_user
+      - d:/:/host_d
+      - C:/:/host_c
+    ports:
+      - "${POD_ENGINE_PORT:-18083}:8083"
+
+volumes:
+  pod_postgres_data:
+  pod_opensearch_data:
+  pod_keys:
+  pod_registry_state:
+  pod_snapshots:

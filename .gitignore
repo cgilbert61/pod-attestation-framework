@@ -1,0 +1,28 @@
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Python bytecode & packaging
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+
+# Local runtime state & keys
+.pod_keys/
+examples/out_demo/
+*.priv.pem
+*.db
+*.sqlite
+*.sqlite3
+pod_snapshot.dsse.json
+
+# OS / IDE artifacts
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

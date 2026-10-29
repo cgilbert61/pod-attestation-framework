@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.proofofdata.dev/snapshot/v0.1",
+  "title": "POD Snapshot Predicate Schema v0.1",
+  "description": "Signed point-in-time snapshot published for in-memory enforcement consumers (e.g., Prevalidator). Includes active records plus expired and revoked tombstones so consumers distinguish UNATTESTED, EXPIRED, and REVOKED without Registry calls.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "snapshot_id",
+    "sequence_number",
+    "issued_at",
+    "expires_at",
+    "publisher_id",
+    "entries"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "0.1.0"
+    },
+    "snapshot_id": {
+      "type": "string",
+      "pattern": "^pod-snap-[a-zA-Z0-9_-]{8,64}$",
+      "description": "Unique identifier for this published snapshot."
+    },
+    "sequence_number": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Monotonically increasing sequence number to prevent rollback/replay attacks."
+    },
+    "issued_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO-8601 UTC timestamp when this snapshot was generated and signed."
+    },
+    "expires_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Short TTL expiry timestamp; consumers MUST fail closed if current time exceeds expires_at."
+    },
+    "publisher_id": {
+      "type": "string",
+      "minLength": 2,
+      "description": "Identity of the Snapshot Publisher instance."
+    },
+    "entries": {
+      "type": "object",
+      "description": "Map of canonical object locator URI to its enforcement contract summary.",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "record_id",
+          "locator",
+          "content_sha256",
+          "tier",
+          "status",
+          "ai_eligibility",
+          "minimum_clearance",
+          "egress_class",
+          "record_expires_at"
+        ],
+        "properties": {
+          "record_id": {
+            "type": "string"
+          },
+          "locator": {
+            "type": "string"
+          },
+          "content_sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "tier": {
+            "type": "string",
+            "enum": ["Public", "Internal", "Confidential", "Restricted"]
+          },
+          "status": {
+            "type": "string",
+            "enum": ["active", "expired", "revoked"],
+            "description": "Normalized enforcement status of the record."
+          },
+          "ai_eligibility": {
+            "type": "string",
+            "enum": ["allow", "strip", "deny"]
+          },
+          "minimum_clearance": {
+            "type": "string",
+            "enum": ["Public", "Internal", "Confidential", "Restricted"]
+          },
+          "egress_class": {
+            "type": "string",
+            "enum": ["local_only", "private_cloud", "public_api"]
+          },
+          "record_expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "revoked_at": {
+            "type": ["string", "null"],
+            "format": "date-time"
+          },
+          "redaction_categories": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        }
+      }
+    }
+  }
+}

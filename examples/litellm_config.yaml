@@ -1,0 +1,20 @@
+model_list:
+  - model_name: gpt-4o
+    litellm_params:
+      model: openai/gpt-4o
+      mock_response: "[LiteLLM Local Gateway (gpt-4o)]: Processed verified request."
+  - model_name: vpc-model
+    litellm_params:
+      model: openai/vpc-model
+      mock_response: "[LiteLLM Private Cloud Gateway (vpc-model)]: Processed internal request."
+  - model_name: local-model
+    litellm_params:
+      model: openai/local-model
+      mock_response: "[LiteLLM In-Boundary Gateway (local-model)]: Processed local request."
+  - model_name: claude-3-5-sonnet
+    litellm_params:
+      model: anthropic/claude-3-5-sonnet
+      mock_response: "[LiteLLM Local Gateway (claude-3-5-sonnet)]: Processed verified Anthropic message."
+
+general_settings:
+  master_key: sk-pod-demo-gateway-key
