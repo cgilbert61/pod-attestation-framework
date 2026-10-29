@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import time
 import uuid
 from pathlib import Path
 from typing import Any, AsyncIterator
@@ -136,7 +137,11 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
         </div>
       </div>
     </div>
-    <div class="links">
+    <div class="links" style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+      <span id="activeLlmBadge" class="badge badge-Internal" style="font-size: 11.5px; text-transform: none; padding: 5px 10px;">
+        LLM: Built-in Gateway (:4000)
+      </span>
+      <button class="btn" style="background: #2563eb;" onclick="toggleLlmConfig()">&#9881; LLM Provider Config</button>
       <button class="btn btn-dark" onclick="toggleMode()">Toggle Enforce / Observe Mode</button>
       <a href="/docs" target="_blank">Prevalidator API</a>
       <a href="http://localhost:18083/docs" target="_blank">Engine API (:18083)</a>
@@ -144,6 +149,82 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       <a href="http://localhost:18081/docs" target="_blank">Snapshot API (:18081)</a>
     </div>
   </header>
+
+  <!-- CONFIGURATION MENU DRAWER: POINT AT ANY LLM PROVIDER -->
+  <div id="llmConfigDrawer" class="card" style="display: none; border: 2px solid #3b82f6; background: #0f172a;">
+    <h2>
+      <span>&#9881; LLM Provider Configuration — Point G1 Docket Prevalidator at Any Local or Cloud LLM</span>
+      <button class="btn btn-dark" style="padding: 4px 10px; font-size: 12px;" onclick="toggleLlmConfig()">&#10005; Close Menu</button>
+    </h2>
+    <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-bottom: 10px;">
+      <div>
+        <label style="font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px;">
+          <strong>1. Select LLM Provider Preset</strong>
+        </label>
+        <select id="llmPresetSelect" onchange="applyLlmPreset()" style="margin-bottom: 0;">
+          <option value="builtin">Built-in G1 Mock Gateway (http://litellm-gateway:4000)</option>
+          <option value="lmstudio">LM Studio on Host PC (http://host.docker.internal:1234)</option>
+          <option value="ollama">Ollama on Host PC (http://host.docker.internal:11434)</option>
+          <option value="litellm_host">LiteLLM / vLLM on Host PC (http://host.docker.internal:4000)</option>
+          <option value="openai">OpenAI Official Cloud API (https://api.openai.com)</option>
+          <option value="anthropic">Anthropic Official Cloud API (https://api.anthropic.com)</option>
+          <option value="gemini">Google Gemini OpenAI API (https://generativelanguage.googleapis.com/v1beta/openai)</option>
+          <option value="custom">Custom OpenAI / Anthropic Compatible Endpoint</option>
+        </select>
+      </div>
+      <div>
+        <label style="font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px;">
+          <strong>2. Provider Label &amp; Protocol</strong>
+        </label>
+        <div style="display: grid; grid-template-columns: 1.3fr 1fr; gap: 8px;">
+          <input type="text" id="llmProviderName" value="Built-in G1 Gateway" style="margin-bottom: 0;" placeholder="Provider Name" />
+          <select id="llmProtocol" style="margin-bottom: 0;">
+            <option value="openai">OpenAI (/v1/chat/completions)</option>
+            <option value="anthropic">Anthropic (/v1/messages)</option>
+          </select>
+        </div>
+      </div>
+      <div>
+        <label style="font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px;">
+          <strong>3. Upstream LLM Base URL</strong>
+        </label>
+        <input type="text" id="llmBaseUrl" value="http://litellm-gateway:4000" style="margin-bottom: 0;" placeholder="http://host.docker.internal:1234" />
+      </div>
+    </div>
+
+    <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; align-items: end; margin-bottom: 12px;">
+      <div>
+        <label style="font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px;">
+          <strong>4. Default Model ID</strong> (or select discovered model)
+        </label>
+        <input type="text" id="llmDefaultModel" value="local-model" style="margin-bottom: 0;" placeholder="e.g. llama3.2, qwen2.5, gpt-4o" />
+      </div>
+      <div>
+        <label style="font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px;">
+          <strong>5. Provider Egress Classification</strong> (Enforced by Prevalidator)
+        </label>
+        <select id="llmEgressClass" style="margin-bottom: 0;">
+          <option value="local_only">local_only — Local Host / Air-Gapped Model</option>
+          <option value="private_cloud">private_cloud — Private VPC / Enterprise Tenant</option>
+          <option value="public_api">public_api — External Public Cloud LLM API</option>
+        </select>
+      </div>
+      <div>
+        <label style="font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px;">
+          <strong>6. Upstream API Key</strong> (Optional for Local LLMs)
+        </label>
+        <input type="password" id="llmApiKey" value="" placeholder="Leave blank for local, or sk-... / anthropic key" style="width: 100%; background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; font-size: 13px; margin-bottom: 0; font-family: ui-monospace, monospace;" />
+      </div>
+    </div>
+
+    <div style="display: flex; gap: 12px; align-items: center; padding-top: 10px; border-top: 1px solid var(--border);">
+      <button class="btn btn-green" onclick="saveLlmConfig()">&#10004; Save &amp; Activate LLM Provider</button>
+      <button class="btn" onclick="testLlmConfig()">&#9889; Test Connection &amp; Discover Models</button>
+      <div id="llmConfigStatus" style="font-size: 13px; color: #34d399; margin-left: 8px;">
+        Active Provider: Built-in G1 Gateway (http://litellm-gateway:4000)
+      </div>
+    </div>
+  </div>
 
   <!-- TOP WORKFLOW: PC DIRECTORY SELECTION + ATTESTATION + PREVALIDATOR DIRECTORY SCAN -->
   <div class="card" style="border-color: #3b82f6;">
@@ -751,7 +832,136 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       await refreshState();
     }
 
+    const LLM_PRESETS = {
+      builtin: { name: 'Built-in G1 Gateway', protocol: 'openai', base_url: 'http://litellm-gateway:4000', default_model: 'local-model', egress_class: 'local_only' },
+      lmstudio: { name: 'LM Studio (Host PC)', protocol: 'openai', base_url: 'http://host.docker.internal:1234', default_model: 'local-model', egress_class: 'local_only' },
+      ollama: { name: 'Ollama (Host PC)', protocol: 'openai', base_url: 'http://host.docker.internal:11434', default_model: 'llama3.2', egress_class: 'local_only' },
+      litellm_host: { name: 'LiteLLM / vLLM (Host PC)', protocol: 'openai', base_url: 'http://host.docker.internal:4000', default_model: 'vpc-model', egress_class: 'private_cloud' },
+      openai: { name: 'OpenAI Cloud API', protocol: 'openai', base_url: 'https://api.openai.com', default_model: 'gpt-4o', egress_class: 'public_api' },
+      anthropic: { name: 'Anthropic Cloud API', protocol: 'anthropic', base_url: 'https://api.anthropic.com', default_model: 'claude-3-5-sonnet-latest', egress_class: 'public_api' },
+      gemini: { name: 'Google Gemini OpenAI API', protocol: 'openai', base_url: 'https://generativelanguage.googleapis.com/v1beta/openai', default_model: 'gemini-2.5-flash', egress_class: 'public_api' }
+    };
+
+    function toggleLlmConfig() {
+      const drawer = document.getElementById('llmConfigDrawer');
+      drawer.style.display = drawer.style.display === 'none' ? 'block' : 'none';
+    }
+
+    function applyLlmPreset() {
+      const key = document.getElementById('llmPresetSelect').value;
+      const p = LLM_PRESETS[key];
+      if (!p) return;
+      document.getElementById('llmProviderName').value = p.name;
+      document.getElementById('llmProtocol').value = p.protocol;
+      document.getElementById('llmBaseUrl').value = p.base_url;
+      document.getElementById('llmDefaultModel').value = p.default_model;
+      document.getElementById('llmEgressClass').value = p.egress_class;
+    }
+
+    function ensureModelInDropdowns(modelId, egressClass) {
+      if (!modelId) return;
+      ['dirModelSelect', 'modelSelect'].forEach(selId => {
+        const sel = document.getElementById(selId);
+        if (!sel) return;
+        const exists = Array.from(sel.options).some(o => o.value === modelId);
+        if (!exists) {
+          const opt = document.createElement('option');
+          opt.value = modelId;
+          opt.textContent = `${modelId} (${egressClass || 'configured'})`;
+          sel.insertBefore(opt, sel.firstChild);
+        }
+        sel.value = modelId;
+      });
+    }
+
+    async function loadLlmConfig() {
+      try {
+        const resp = await fetch('/v1/admin/llm-config', { headers: { 'X-POD-Admin-Key': ADMIN_KEY } });
+        if (!resp.ok) return;
+        const cfg = await resp.json();
+        document.getElementById('llmProviderName').value = cfg.provider_name || 'Built-in G1 Gateway';
+        document.getElementById('llmProtocol').value = cfg.protocol || 'openai';
+        document.getElementById('llmBaseUrl').value = cfg.base_url || 'http://litellm-gateway:4000';
+        document.getElementById('llmDefaultModel').value = cfg.default_model || 'local-model';
+        document.getElementById('llmEgressClass').value = cfg.egress_class || 'local_only';
+        document.getElementById('activeLlmBadge').textContent = `LLM: ${cfg.provider_name} (${cfg.default_model} • ${cfg.egress_class})`;
+        document.getElementById('llmConfigStatus').textContent = `Active Provider: ${cfg.provider_name} -> ${cfg.base_url} [Model: ${cfg.default_model}, Egress: ${cfg.egress_class}, API Key: ${cfg.has_api_key ? cfg.api_key_masked : 'none'}]`;
+        ensureModelInDropdowns(cfg.default_model, cfg.egress_class);
+        if (cfg.protocol === 'anthropic') {
+          document.getElementById('endpointSelect').value = '/v1/messages';
+        } else {
+          document.getElementById('endpointSelect').value = '/v1/chat/completions';
+        }
+      } catch (e) {}
+    }
+
+    async function saveLlmConfig() {
+      const payload = {
+        provider_name: document.getElementById('llmProviderName').value.trim(),
+        protocol: document.getElementById('llmProtocol').value,
+        base_url: document.getElementById('llmBaseUrl').value.trim(),
+        default_model: document.getElementById('llmDefaultModel').value.trim(),
+        egress_class: document.getElementById('llmEgressClass').value,
+        api_key: document.getElementById('llmApiKey').value.trim()
+      };
+      const statusEl = document.getElementById('llmConfigStatus');
+      statusEl.style.color = '#93c5fd';
+      statusEl.textContent = 'Saving LLM provider configuration...';
+      const resp = await fetch('/v1/admin/llm-config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-POD-Admin-Key': ADMIN_KEY },
+        body: JSON.stringify(payload)
+      });
+      const data = await resp.json();
+      if (!resp.ok) {
+        statusEl.style.color = '#f87171';
+        statusEl.textContent = 'Error saving config: ' + (data.detail || resp.status);
+        return;
+      }
+      statusEl.style.color = '#34d399';
+      statusEl.textContent = `✔ Saved & Activated: ${data.provider_name} (${data.base_url}) — Model '${data.default_model}' mapped to egress '${data.egress_class}'`;
+      document.getElementById('activeLlmBadge').textContent = `LLM: ${data.provider_name} (${data.default_model} • ${data.egress_class})`;
+      ensureModelInDropdowns(data.default_model, data.egress_class);
+      if (data.protocol === 'anthropic') {
+        document.getElementById('endpointSelect').value = '/v1/messages';
+      } else {
+        document.getElementById('endpointSelect').value = '/v1/chat/completions';
+      }
+    }
+
+    async function testLlmConfig() {
+      const payload = {
+        provider_name: document.getElementById('llmProviderName').value.trim(),
+        protocol: document.getElementById('llmProtocol').value,
+        base_url: document.getElementById('llmBaseUrl').value.trim(),
+        default_model: document.getElementById('llmDefaultModel').value.trim(),
+        egress_class: document.getElementById('llmEgressClass').value,
+        api_key: document.getElementById('llmApiKey').value.trim()
+      };
+      const statusEl = document.getElementById('llmConfigStatus');
+      statusEl.style.color = '#fbbf24';
+      statusEl.textContent = `Testing connection to ${payload.base_url}...`;
+      const resp = await fetch('/v1/admin/llm-config/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-POD-Admin-Key': ADMIN_KEY },
+        body: JSON.stringify(payload)
+      });
+      const data = await resp.json();
+      if (!resp.ok || !data.reachable) {
+        statusEl.style.color = '#f87171';
+        statusEl.textContent = `✖ Connection failed: ${data.error || data.detail || 'Unreachable'}`;
+        return;
+      }
+      statusEl.style.color = '#34d399';
+      const modelsStr = (data.discovered_models && data.discovered_models.length)
+        ? ` | Discovered models: ${data.discovered_models.slice(0, 6).join(', ')}`
+        : '';
+      statusEl.textContent = `✔ Connected to ${data.base_url} in ${data.latency_ms} ms (HTTP ${data.status_code})${modelsStr}`;
+      (data.discovered_models || []).forEach(m => ensureModelInDropdowns(m, payload.egress_class));
+    }
+
     loadPreset('allow');
+    loadLlmConfig();
     loadPcFoldersDropdown();
     // Auto-run initial directory attestation and Prevalidator scan so verifiable English counts appear immediately
     attestSelectedDirectory();
@@ -783,6 +993,39 @@ def create_prevalidator_app(
     upstream_url = (upstream_gateway_url or os.environ.get("POD_UPSTREAM_GATEWAY_URL", "mock://local")).rstrip("/")
     engine_url = (engine_service_url or os.environ.get("POD_ENGINE_SERVICE_URL", "http://engine:8083")).rstrip("/")
     admin_key = os.environ.get("POD_ADMIN_API_KEY", "pod-dev-admin-key")
+    llm_config_file = Path(os.environ.get("POD_LLM_CONFIG_FILE", "./llm_provider_config.json"))
+
+    llm_config: dict[str, Any] = {
+        "provider_name": "Built-in G1 Gateway",
+        "protocol": "openai",
+        "base_url": upstream_url,
+        "default_model": "local-model",
+        "egress_class": "local_only",
+        "api_key": os.environ.get("POD_UPSTREAM_API_KEY", ""),
+    }
+    if llm_config_file.exists():
+        try:
+            saved_cfg = json.loads(llm_config_file.read_text(encoding="utf-8"))
+            if isinstance(saved_cfg, dict) and saved_cfg.get("base_url"):
+                llm_config.update(saved_cfg)
+                if llm_config.get("default_model") and llm_config.get("egress_class"):
+                    enforcer.route_egress_map[llm_config["default_model"]] = llm_config["egress_class"]
+        except Exception:
+            pass
+
+    def _public_llm_config() -> dict[str, Any]:
+        raw_key = llm_config.get("api_key") or ""
+        masked = f"{raw_key[:5]}...{raw_key[-4:]}" if len(raw_key) > 9 else ("****" if raw_key else "")
+        return {
+            "provider_name": llm_config["provider_name"],
+            "protocol": llm_config["protocol"],
+            "base_url": llm_config["base_url"],
+            "default_model": llm_config["default_model"],
+            "egress_class": llm_config["egress_class"],
+            "has_api_key": bool(raw_key),
+            "api_key_masked": masked,
+            "route_egress_map": enforcer.route_egress_map,
+        }
 
     @app.get("/", response_class=HTMLResponse)
     def root_console() -> str:
@@ -990,6 +1233,109 @@ def create_prevalidator_app(
             "snapshot_sequence": snap["sequence_number"] if snap else None,
         }
 
+    @app.get("/v1/admin/llm-config")
+    def get_llm_config(x_pod_admin_key: str | None = Header(default=None)) -> dict[str, Any]:
+        if x_pod_admin_key != admin_key:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid X-POD-Admin-Key")
+        return _public_llm_config()
+
+    @app.post("/v1/admin/llm-config")
+    async def update_llm_config(request: Request, x_pod_admin_key: str | None = Header(default=None)) -> dict[str, Any]:
+        if x_pod_admin_key != admin_key:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid X-POD-Admin-Key")
+        body = await request.json()
+        provider_name = (body.get("provider_name") or "Custom LLM Provider").strip()
+        protocol = (body.get("protocol") or "openai").strip().lower()
+        base_url = (body.get("base_url") or "").strip().rstrip("/")
+        default_model = (body.get("default_model") or "local-model").strip()
+        egress_class = (body.get("egress_class") or "local_only").strip()
+        new_api_key = body.get("api_key")
+
+        if not base_url:
+            raise HTTPException(status_code=400, detail="base_url is required")
+        if egress_class not in ("local_only", "private_cloud", "public_api"):
+            raise HTTPException(status_code=400, detail="egress_class must be local_only, private_cloud, or public_api")
+
+        llm_config["provider_name"] = provider_name
+        llm_config["protocol"] = protocol
+        llm_config["base_url"] = base_url
+        llm_config["default_model"] = default_model
+        llm_config["egress_class"] = egress_class
+        if new_api_key is not None and str(new_api_key).strip() != "":
+            llm_config["api_key"] = str(new_api_key).strip()
+
+        enforcer.route_egress_map[default_model] = egress_class
+        try:
+            llm_config_file.parent.mkdir(parents=True, exist_ok=True)
+            llm_config_file.write_text(json.dumps(llm_config, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+        return _public_llm_config()
+
+    @app.post("/v1/admin/llm-config/test")
+    async def test_llm_config(request: Request, x_pod_admin_key: str | None = Header(default=None)) -> dict[str, Any]:
+        if x_pod_admin_key != admin_key:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid X-POD-Admin-Key")
+        body = await request.json()
+        base_url = (body.get("base_url") or llm_config["base_url"]).strip().rstrip("/")
+        egress_class = (body.get("egress_class") or llm_config["egress_class"]).strip()
+        api_key = (body.get("api_key") or llm_config.get("api_key") or "").strip()
+
+        if base_url.startswith("mock://"):
+            return {
+                "reachable": True,
+                "base_url": base_url,
+                "status_code": 200,
+                "latency_ms": 0.2,
+                "discovered_models": ["local-model", "vpc-model", "gpt-4o"],
+            }
+
+        req_headers: dict[str, str] = {}
+        if api_key:
+            req_headers["Authorization"] = f"Bearer {api_key}"
+            req_headers["x-api-key"] = api_key
+            req_headers["anthropic-version"] = "2023-06-01"
+
+        t0 = time.perf_counter()
+        discovered_models: list[str] = []
+        status_code = 0
+        try:
+            async with httpx.AsyncClient(timeout=8.0) as client:
+                # Probe /v1/models first, then /api/tags (Ollama), then /healthz
+                for probe_path in ("/v1/models", "/models", "/api/tags", "/healthz"):
+                    try:
+                        r = await client.get(f"{base_url}{probe_path}", headers=req_headers)
+                        status_code = r.status_code
+                        if r.status_code < 500:
+                            try:
+                                j = r.json()
+                                if isinstance(j, dict):
+                                    if isinstance(j.get("data"), list):
+                                        discovered_models = [str(m.get("id")) for m in j["data"] if isinstance(m, dict) and m.get("id")]
+                                    elif isinstance(j.get("models"), list):
+                                        discovered_models = [str(m.get("name") or m.get("id")) for m in j["models"] if isinstance(m, dict)]
+                            except Exception:
+                                pass
+                            break
+                    except Exception:
+                        continue
+            latency_ms = round((time.perf_counter() - t0) * 1000.0, 2)
+            if status_code == 0:
+                return {"reachable": False, "base_url": base_url, "error": f"Could not connect to {base_url}"}
+            for m_id in discovered_models:
+                if egress_class in ("local_only", "private_cloud", "public_api"):
+                    enforcer.route_egress_map[m_id] = egress_class
+            return {
+                "reachable": True,
+                "base_url": base_url,
+                "status_code": status_code,
+                "latency_ms": latency_ms,
+                "discovered_models": discovered_models,
+            }
+        except Exception as exc:
+            return {"reachable": False, "base_url": base_url, "error": str(exc)}
+
     @app.post("/v1/chat/completions")
     async def openai_chat_completions(request: Request) -> Any:
         payload = await request.json()
@@ -1000,10 +1346,11 @@ def create_prevalidator_app(
             return JSONResponse(status_code=status.HTTP_403_FORBIDDEN, content=outcome.client_denial_body)
 
         clean_payload = outcome.transformed_payload
-        model = clean_payload.get("model", "gpt-4o")
+        model = clean_payload.get("model", llm_config.get("default_model", "gpt-4o"))
         is_stream = bool(clean_payload.get("stream", False))
+        active_base_url = llm_config["base_url"]
 
-        if upstream_url.startswith("mock://"):
+        if active_base_url.startswith("mock://"):
             user_text = _extract_last_user_text(clean_payload)
             if is_stream:
                 return StreamingResponse(_mock_openai_sse_stream(model, user_text), media_type="text/event-stream")
@@ -1028,9 +1375,13 @@ def create_prevalidator_app(
             for k, v in request.headers.items()
             if k.lower() not in ("host", "content-length", "x-pod-locators", "x-pod-caller-key", "x-pod-caller-token")
         }
+        if llm_config.get("api_key") and "authorization" not in {k.lower() for k in forward_headers}:
+            forward_headers["Authorization"] = f"Bearer {llm_config['api_key']}"
+
+        target_endpoint = f"{active_base_url}/chat/completions" if active_base_url.endswith("/v1") or active_base_url.endswith("/openai") else f"{active_base_url}/v1/chat/completions"
         if is_stream:
             client = httpx.AsyncClient(timeout=60.0)
-            req = client.build_request("POST", f"{upstream_url}/v1/chat/completions", json=clean_payload, headers=forward_headers)
+            req = client.build_request("POST", target_endpoint, json=clean_payload, headers=forward_headers)
             resp = await client.send(req, stream=True)
 
             async def stream_passthrough() -> AsyncIterator[bytes]:
@@ -1044,7 +1395,7 @@ def create_prevalidator_app(
             return StreamingResponse(stream_passthrough(), status_code=resp.status_code, media_type="text/event-stream")
 
         async with httpx.AsyncClient(timeout=60.0) as client:
-            resp = await client.post(f"{upstream_url}/v1/chat/completions", json=clean_payload, headers=forward_headers)
+            resp = await client.post(target_endpoint, json=clean_payload, headers=forward_headers)
             return JSONResponse(status_code=resp.status_code, content=resp.json())
 
     @app.post("/v1/messages")
@@ -1057,10 +1408,11 @@ def create_prevalidator_app(
             return JSONResponse(status_code=status.HTTP_403_FORBIDDEN, content=outcome.client_denial_body)
 
         clean_payload = outcome.transformed_payload
-        model = clean_payload.get("model", "claude-3-5-sonnet")
+        model = clean_payload.get("model", llm_config.get("default_model", "claude-3-5-sonnet"))
         is_stream = bool(clean_payload.get("stream", False))
+        active_base_url = llm_config["base_url"]
 
-        if upstream_url.startswith("mock://"):
+        if active_base_url.startswith("mock://"):
             user_text = _extract_last_user_text(clean_payload)
             if is_stream:
                 return StreamingResponse(_mock_anthropic_sse_stream(model, user_text), media_type="text/event-stream")
@@ -1083,9 +1435,17 @@ def create_prevalidator_app(
             for k, v in request.headers.items()
             if k.lower() not in ("host", "content-length", "x-pod-locators", "x-pod-caller-key", "x-pod-caller-token")
         }
+        if llm_config.get("api_key"):
+            lower_keys = {k.lower() for k in forward_headers}
+            if "x-api-key" not in lower_keys:
+                forward_headers["x-api-key"] = llm_config["api_key"]
+            if "anthropic-version" not in lower_keys:
+                forward_headers["anthropic-version"] = "2023-06-01"
+
+        target_endpoint = f"{active_base_url}/messages" if active_base_url.endswith("/v1") else f"{active_base_url}/v1/messages"
         if is_stream:
             client = httpx.AsyncClient(timeout=60.0)
-            req = client.build_request("POST", f"{upstream_url}/v1/messages", json=clean_payload, headers=forward_headers)
+            req = client.build_request("POST", target_endpoint, json=clean_payload, headers=forward_headers)
             resp = await client.send(req, stream=True)
 
             async def stream_passthrough() -> AsyncIterator[bytes]:
@@ -1099,7 +1459,7 @@ def create_prevalidator_app(
             return StreamingResponse(stream_passthrough(), status_code=resp.status_code, media_type="text/event-stream")
 
         async with httpx.AsyncClient(timeout=60.0) as client:
-            resp = await client.post(f"{upstream_url}/v1/messages", json=clean_payload, headers=forward_headers)
+            resp = await client.post(target_endpoint, json=clean_payload, headers=forward_headers)
             return JSONResponse(status_code=resp.status_code, content=resp.json())
 
     @app.get("/v1/admin/audit-log")

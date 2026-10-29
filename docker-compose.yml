@@ -112,14 +112,18 @@ services:
     environment:
       POD_KEY_DIR: /var/lib/pod/keys
       POD_SNAPSHOT_FILE: /var/lib/pod/snapshots/pod_snapshot.dsse.json
+      POD_LLM_CONFIG_FILE: /var/lib/pod/data/llm_provider_config.json
       POD_PREVALIDATOR_MODE: ${POD_PREVALIDATOR_MODE:-enforce}
       POD_UPSTREAM_GATEWAY_URL: ${POD_UPSTREAM_GATEWAY_URL:-http://litellm-gateway:4000}
       POD_ADMIN_API_KEY: ${POD_ADMIN_API_KEY:-pod-dev-admin-key}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "${POD_PREVALIDATOR_PORT:-18082}:8082"
     volumes:
       - pod_keys:/var/lib/pod/keys:ro
       - pod_snapshots:/var/lib/pod/snapshots:ro
+      - pod_registry_state:/var/lib/pod/data
       - d:/attestation:/host_workspace
       - C:/Users/chuck:/host_user:ro
       - d:/:/host_d:ro
