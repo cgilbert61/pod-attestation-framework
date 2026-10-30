@@ -220,7 +220,9 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
           </label>
         </div>
         <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-          <button class="btn btn-green" onclick="saveCrawlerTargetsSelection()">&#10004; Save Target Selection</button>
+          <button class="btn btn-green" onclick="controlContinuousCrawler({ running: true })">&#9654; Start Enterprise Scan</button>
+          <button class="btn" style="background: #dc2626;" onclick="stopContinuousCrawler()">&#9209; Stop Enterprise Scan</button>
+          <button class="btn btn-dark" onclick="saveCrawlerTargetsSelection()">&#10004; Save Target Selection</button>
           <button class="btn btn-amber" onclick="resetCrawlerWatermarks()">&#128260; Clear Watermarks (Force Full Deep Re-Scan)</button>
         </div>
       </div>
@@ -471,8 +473,9 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
         <span>Enterprise Continuous Background Delta Crawler (Zero File Limits &bull; 2-Pass mtime/ETag Filter &bull; Rolling Micro-Snapshots)</span>
         <span id="crawlerStateBadge" class="badge badge-Public">SWEEPING LIVE</span>
       </span>
-      <div style="display: flex; align-items: center; gap: 8px;">
-        <button id="crawlerToggleBtn" class="btn btn-amber" style="padding: 6px 12px; font-size: 12px;" onclick="toggleContinuousCrawlerRun()">&#9208; Pause Continuous Scanner</button>
+      <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+        <button id="crawlerToggleBtn" class="btn btn-green" style="padding: 6px 12px; font-size: 12px;" onclick="toggleContinuousCrawlerRun()">&#9654; Start Enterprise Scan</button>
+        <button id="crawlerStopBtn" class="btn" style="background: #dc2626; padding: 6px 12px; font-size: 12px;" onclick="stopContinuousCrawler()">&#9209; Stop Enterprise Scan</button>
         <button class="btn" style="background: #0d9488; padding: 6px 12px; font-size: 12px;" onclick="sweepSelectedTargetUnbounded()">&#127919; Sweep Selected Drive/Store Unbounded</button>
         <button class="btn btn-dark" style="padding: 6px 12px; font-size: 12px;" onclick="resetCrawlerWatermarks()">&#128260; Force Deep Re-Scan</button>
         <button class="btn btn-dark" style="padding: 6px 12px; font-size: 12px;" onclick="toggleEnterpriseScannerDrawer()">&#9881; Configure What Is Scanned</button>
@@ -1649,6 +1652,10 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       await controlContinuousCrawler({ running: !crawlerRunning });
     }
 
+    async function stopContinuousCrawler() {
+      await controlContinuousCrawler({ stop_scan: true, running: false });
+    }
+
     async function resetCrawlerWatermarks() {
       await controlContinuousCrawler({ reset_watermarks: true, running: true });
     }
@@ -1691,18 +1698,25 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       crawlerRunning = Boolean(data.running);
       const badge = document.getElementById('crawlerStateBadge');
       const btn = document.getElementById('crawlerToggleBtn');
+      const stopBtn = document.getElementById('crawlerStopBtn');
+      const statusText = String(data.status_label || (crawlerRunning ? 'SWEEPING' : 'STOPPED'));
+      const isStopped = !crawlerRunning && statusText.startsWith('STOPPED');
       if (badge) {
-        badge.textContent = data.status_label || (crawlerRunning ? 'SWEEPING' : 'PAUSED');
-        badge.className = 'badge ' + (crawlerRunning ? 'badge-Public' : 'badge-Confidential');
+        badge.textContent = statusText;
+        badge.className = 'badge ' + (crawlerRunning ? 'badge-Public' : (isStopped ? 'badge-FAIL' : 'badge-Confidential'));
       }
       if (btn) {
         if (crawlerRunning) {
           btn.innerHTML = '&#9208; Pause Continuous Scanner';
           btn.className = 'btn btn-amber';
         } else {
-          btn.innerHTML = '&#9654; Resume Continuous Scanner';
+          btn.innerHTML = '&#9654; Start Enterprise Scan';
           btn.className = 'btn btn-green';
         }
+      }
+      if (stopBtn) {
+        stopBtn.disabled = !crawlerRunning && isStopped;
+        stopBtn.style.opacity = (!crawlerRunning && isStopped) ? '0.55' : '1';
       }
 
       document.getElementById('crFilesSwept').textContent = Number(data.files_swept || 0).toLocaleString();
@@ -1723,6 +1737,8 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
             return `<div style="color:#34d399;">[${item.timestamp}] ⚡ <strong>[ATTESTING DELTA]</strong> ${item.path} &rarr; <span class="badge badge-${item.tier || 'Internal'}" style="padding:1px 6px;font-size:10px;">${item.tier || ''}</span> <span style="color:#94a3b8;">(${item.detail}${item.sha256 ? ' • sha256: ' + item.sha256 : ''})</span></div>`;
           } else if (item.kind === 'snapshot') {
             return `<div style="color:#a78bfa; font-weight:700;">[${item.timestamp}] 📦 [ROLLING MICRO-SNAPSHOT] ${item.path} — ${item.detail}</div>`;
+          } else if (item.kind === 'stop') {
+            return `<div style="color:#f87171; font-weight:700;">[${item.timestamp}] 🛑 [ENTERPRISE SCAN STOPPED] ${item.path} — ${item.detail}</div>`;
           } else if (item.kind === 'revoke') {
             return `<div style="color:#f87171; font-weight:700;">[${item.timestamp}] 🚫 [REVOKED DELETED] ${item.path} — ${item.detail}</div>`;
           } else {

@@ -134,10 +134,10 @@ class ContinuousDeltaCrawler:
         self.watermark_index: dict[str, WatermarkEntry] = {}
 
         # Live Rolling Telemetry & Ticker Feed
-        self.status_label: str = "PAUSED (READY)"
-        self.current_target: str = "Idle"
-        self.current_file: str = "Click '▶ Start Continuous Enterprise Scanner' to begin zero-limit delta sweep"
-        self.current_action: str = "IDLE"
+        self.status_label: str = "STOPPED (READY)"
+        self.current_target: str = "Stopped"
+        self.current_file: str = "Stopped — Click '▶ Start Enterprise Scan' to begin zero-limit delta sweep"
+        self.current_action: str = "STOPPED"
         self.files_swept: int = 0
         self.unchanged_skipped: int = 0
         self.deltas_attested: int = 0
@@ -275,6 +275,21 @@ class ContinuousDeltaCrawler:
 
     def update_config(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Update continuous scanner settings, target list, or running state."""
+        if payload.get("stop_scan"):
+            self.running = False
+            self.status_label = "STOPPED"
+            self.current_target = "Stopped"
+            self.scan_rate_files_per_sec = 0.0
+            self._rate_window.clear()
+            self._push_ticker(
+                kind="stop",
+                display_path="ENTERPRISE SCAN STOPPED",
+                detail="Continuous background delta crawler stopped by operator",
+            )
+            self.current_file = "🛑 Enterprise Continuous Scan Stopped — Click '▶ Start Enterprise Scan' to resume"
+            self.current_action = "STOPPED"
+            return self.get_telemetry()
+
         if "running" in payload:
             self.running = bool(payload["running"])
             self.status_label = f"SWEEPING (PASS #{max(1, self.pass_number)})" if self.running else "PAUSED"

@@ -132,7 +132,7 @@ def create_engine_app() -> FastAPI:
         publish_snapshot_fn=_publish_and_reload_prevalidator,
         scan_lock=scan_lock,
     )
-    crawler.running = os.environ.get("POD_CONTINUOUS_SCANNER_AUTOSTART", "true").lower() == "true"
+    crawler.running = os.environ.get("POD_CONTINUOUS_SCANNER_AUTOSTART", "false").lower() == "true"
 
     def _run_scan_cycle() -> dict[str, Any]:
         with scan_lock:
