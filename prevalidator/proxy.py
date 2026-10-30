@@ -141,6 +141,9 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       <span id="activeLlmBadge" class="badge badge-Internal" style="font-size: 11.5px; text-transform: none; padding: 5px 10px;">
         LLM: Built-in Gateway (:4000)
       </span>
+      <span id="headerLatencyPill" class="badge badge-Public" style="font-size: 11.5px; text-transform: none; padding: 5px 10px; font-family: ui-monospace, monospace;">
+        &#9201; Gate Latency: -- ms
+      </span>
       <a href="/dlp" class="btn" style="background: #7c3aed; color: #ffffff; text-decoration: none; margin-left: 0;">&#9729; DLP Connectors (Purview / Cloud)</a>
       <button class="btn" style="background: #2563eb;" onclick="toggleLlmConfig()">&#9881; LLM Provider Config</button>
       <button id="toggleModeBtn" class="btn" style="background: #059669; color: #ffffff;" onclick="toggleMode()">&#128737; Mode: ENFORCE (Click &rarr; Observe)</button>
@@ -224,6 +227,68 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       <div id="llmConfigStatus" style="font-size: 13px; color: #34d399; margin-left: 8px;">
         Active Provider: Built-in G1 Gateway (http://litellm-gateway:4000)
       </div>
+    </div>
+  </div>
+
+  <!-- REAL-TIME PREVALIDATOR ZERO-DB LATENCY CLOCK & TELEMETRY -->
+  <div class="card" style="border-color: #10b981; background: linear-gradient(180deg, #0f172a 0%, #111827 100%); margin-bottom: 18px;">
+    <h2 style="border-bottom-color: #1e293b;">
+      <span style="display: flex; align-items: center; gap: 10px;">
+        <span style="font-size: 18px;">&#9201;</span>
+        <span>Prevalidator Zero-DB Latency Clock (Sub-Millisecond In-Memory Cryptographic Gate)</span>
+        <span id="latSlaBadge" class="badge badge-Public">SLA &le; 5.0 ms: 100% PASS</span>
+      </span>
+      <div style="display: flex; align-items: center; gap: 10px;">
+        <button id="benchBtn" class="btn btn-green" style="padding: 6px 12px; font-size: 12px;" onclick="runLatencyBenchmark()">&#9889; Benchmark 100 Live Evaluations</button>
+      </div>
+    </h2>
+
+    <div style="display: grid; grid-template-columns: 1.35fr repeat(5, 1fr); gap: 12px; align-items: stretch; margin-top: 10px;">
+      <!-- DIGITAL CLOCK READOUT -->
+      <div style="background: #050811; border: 1px solid #10b981; border-radius: 8px; padding: 12px 14px; display: flex; flex-direction: column; justify-content: center; box-shadow: inset 0 0 18px rgba(16,185,129,0.12);">
+        <div style="font-size: 10.5px; color: #6ee7b7; text-transform: uppercase; letter-spacing: 0.8px; font-weight: 700;">Live Gate Decision Clock</div>
+        <div id="latClockDigital" style="font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 26px; font-weight: 800; color: #34d399; margin-top: 4px; letter-spacing: 0.5px;">0.000 ms</div>
+        <div id="latClockMicro" style="font-family: ui-monospace, monospace; font-size: 11.5px; color: #94a3b8; margin-top: 2px;">0.0 &mu;s &bull; 0 DB Calls</div>
+      </div>
+
+      <div class="score-box" style="margin: 0; display: flex; flex-direction: column; justify-content: center;">
+        <div class="lbl">P50 (Median)</div>
+        <div id="latP50" class="num" style="font-size: 21px; color: #38bdf8; font-family: ui-monospace, monospace;">-</div>
+        <div style="font-size: 11px; color: var(--muted); margin-top: 2px;">Avg: <span id="latAvg">-</span></div>
+      </div>
+
+      <div class="score-box" style="margin: 0; display: flex; flex-direction: column; justify-content: center;">
+        <div class="lbl">P95 / P99 Tail</div>
+        <div id="latP95" class="num" style="font-size: 21px; color: #a78bfa; font-family: ui-monospace, monospace;">-</div>
+        <div style="font-size: 11px; color: var(--muted); margin-top: 2px;">P99: <span id="latP99">-</span></div>
+      </div>
+
+      <div class="score-box" style="margin: 0; display: flex; flex-direction: column; justify-content: center;">
+        <div class="lbl">Dir Batch Enforcer</div>
+        <div id="latDirEnforcer" class="num" style="font-size: 21px; color: #34d399; font-family: ui-monospace, monospace;">-</div>
+        <div id="latDirPerFile" style="font-size: 11px; color: var(--muted); margin-top: 2px;">- &mu;s / file</div>
+      </div>
+
+      <div class="score-box" style="margin: 0; display: flex; flex-direction: column; justify-content: center;">
+        <div class="lbl">Batch Throughput</div>
+        <div id="latThroughput" class="num" style="font-size: 21px; color: #fbbf24; font-family: ui-monospace, monospace;">-</div>
+        <div id="latDirWall" style="font-size: 11px; color: var(--muted); margin-top: 2px;">Disk+Hash: - ms</div>
+      </div>
+
+      <div class="score-box" style="margin: 0; display: flex; flex-direction: column; justify-content: center;">
+        <div class="lbl">Total Gate Checks</div>
+        <div id="latTotalChecks" class="num" style="font-size: 21px; color: #f8fafc; font-family: ui-monospace, monospace;">0</div>
+        <div style="font-size: 11px; color: #34d399; margin-top: 2px;">In-Memory Snapshot</div>
+      </div>
+    </div>
+
+    <!-- SPARKLINE BAR CHART OF RECENT GATE DECISIONS -->
+    <div style="margin-top: 12px; background: #090d16; border: 1px solid var(--border); border-radius: 6px; padding: 8px 12px; display: flex; align-items: center; gap: 14px;">
+      <div style="font-size: 11px; color: var(--muted); white-space: nowrap;">
+        <strong>Recent Gate Decisions (ms):</strong><br/>
+        <span style="font-size: 10px; color: #64748b;">Green &lt; 1.0 ms &bull; SLA Budget = 5.0 ms</span>
+      </div>
+      <div id="latSparkline" style="flex: 1; display: flex; align-items: flex-end; gap: 4px; height: 34px; padding-top: 4px;"></div>
     </div>
   </div>
 
@@ -419,6 +484,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
               <th>Time</th>
               <th>Mode</th>
               <th>Decision</th>
+              <th>Gate Latency</th>
               <th>Reason Codes</th>
               <th>Clearance / Egress</th>
             </tr>
@@ -798,6 +864,9 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     async function refreshState() {
       const h = await (await fetch('/healthz')).json();
       currentMode = h.mode;
+      if (h.latency) {
+        renderLatencyClock(h.latency);
+      }
       const badge = document.getElementById('modeBadge');
       badge.textContent = currentMode === 'enforce' ? 'ENFORCE MODE (BLOCKING)' : 'OBSERVE MODE (AUDIT-ONLY)';
       badge.className = 'badge ' + (currentMode === 'enforce' ? 'badge-Public' : 'badge-Confidential');
@@ -837,13 +906,89 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       atbody.innerHTML = '';
       auditResp.entries.slice().reverse().slice(0, 10).forEach(a => {
         const tr = document.createElement('tr');
+        const latMs = typeof a.decision_latency_ms === 'number' ? a.decision_latency_ms.toFixed(3) + ' ms' : '-';
+        const latUs = typeof a.decision_latency_us === 'number' ? ` (${a.decision_latency_us.toFixed(0)} µs)` : '';
         tr.innerHTML = `<td><code>${a.timestamp.slice(11, 19)}</code></td>
           <td>${a.mode}</td>
           <td><strong>${a.decision}</strong></td>
+          <td><code style="color:#34d399; font-weight:700;">${latMs}${latUs}</code></td>
           <td><code>${(a.reason_codes || []).join(', ') || 'NONE'}</code></td>
           <td>${a.caller_clearance} / <code>${a.target_egress}</code></td>`;
         atbody.appendChild(tr);
       });
+    }
+
+    function renderLatencyClock(lat) {
+      if (!lat) return;
+      const lastMs = Number(lat.last_decision_ms || 0);
+      const lastUs = Number(lat.last_decision_us || 0);
+      document.getElementById('latClockDigital').textContent = `${lastMs.toFixed(3)} ms`;
+      document.getElementById('latClockMicro').innerHTML = `${lastUs.toFixed(1)} &mu;s &bull; 0 DB Calls`;
+      document.getElementById('latP50').textContent = `${Number(lat.p50_ms || 0).toFixed(3)} ms`;
+      document.getElementById('latAvg').textContent = `${Number(lat.avg_ms || 0).toFixed(3)} ms`;
+      document.getElementById('latP95').textContent = `${Number(lat.p95_ms || 0).toFixed(3)} ms`;
+      document.getElementById('latP99').textContent = `${Number(lat.p99_ms || 0).toFixed(3)} ms`;
+      document.getElementById('latTotalChecks').textContent = lat.total_evaluations || 0;
+
+      const headerPill = document.getElementById('headerLatencyPill');
+      if (headerPill) {
+        headerPill.innerHTML = `&#9201; Gate: ${lastMs.toFixed(3)} ms (P95: ${Number(lat.p95_ms || 0).toFixed(2)} ms)`;
+      }
+
+      const slaBadge = document.getElementById('latSlaBadge');
+      if (slaBadge) {
+        const pct = Number(lat.sla_compliant_pct ?? 100);
+        slaBadge.textContent = `SLA ≤ 5.0 ms: ${pct.toFixed(1)}% PASS`;
+        slaBadge.className = 'badge ' + (pct >= 99 ? 'badge-Public' : 'badge-Confidential');
+      }
+
+      const dirScan = lat.last_directory_scan || {};
+      if (dirScan.total_files > 0) {
+        document.getElementById('latDirEnforcer').textContent = `${Number(dirScan.in_memory_enforcer_ms || 0).toFixed(2)} ms`;
+        document.getElementById('latDirPerFile').innerHTML = `${Number(dirScan.avg_per_file_us || 0).toFixed(1)} &mu;s / file (${dirScan.total_files} files)`;
+        document.getElementById('latThroughput').textContent = `${Math.round(Number(dirScan.files_per_sec || 0)).toLocaleString()} /s`;
+        document.getElementById('latDirWall').textContent = `Disk+SHA256: ${Number(dirScan.total_wall_ms || 0).toFixed(1)} ms`;
+      }
+
+      const spark = document.getElementById('latSparkline');
+      if (spark) {
+        spark.innerHTML = '';
+        const samples = lat.recent_samples_ms || [];
+        const maxVal = Math.max(1.0, ...samples);
+        samples.forEach((val, idx) => {
+          const pctHeight = Math.max(14, Math.min(100, Math.round((val / maxVal) * 100)));
+          const color = val <= 1.0 ? '#10b981' : (val <= 5.0 ? '#f59e0b' : '#ef4444');
+          const bar = document.createElement('div');
+          bar.title = `Eval #${idx + 1}: ${val.toFixed(3)} ms (${(val * 1000).toFixed(1)} µs)`;
+          bar.style.cssText = `flex:1; max-width:22px; height:${pctHeight}%; background:${color}; border-radius:3px 3px 0 0; position:relative; cursor:pointer;`;
+          spark.appendChild(bar);
+        });
+      }
+    }
+
+    async function runLatencyBenchmark() {
+      const btn = document.getElementById('benchBtn');
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = '⏳ Benchmarking 100 Evaluations...';
+      }
+      try {
+        const resp = await fetch('/v1/admin/latency-benchmark', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-POD-Admin-Key': ADMIN_KEY },
+          body: JSON.stringify({ iterations: 100 })
+        });
+        const data = await resp.json();
+        if (resp.ok && data.latency) {
+          renderLatencyClock(data.latency);
+          await refreshState();
+        }
+        if (btn && data.benchmark_wall_ms !== undefined) {
+          btn.textContent = `✔ 100 Evals in ${Number(data.benchmark_wall_ms).toFixed(2)} ms (${Number(data.avg_eval_us).toFixed(1)} µs/eval)`;
+        }
+      } finally {
+        if (btn) btn.disabled = false;
+      }
     }
 
     async function toggleMode() {
@@ -1783,6 +1928,7 @@ def create_prevalidator_app(
     @app.post("/v1/prevalidate-directory")
     async def prevalidate_directory(request: Request) -> dict[str, Any]:
         """Scan every file in a directory (by PC path or browser folder picker upload) against the in-memory signed snapshot."""
+        t_wall_start_ns = time.perf_counter_ns()
         body = await request.json()
         caller_key = body.get("caller_key", "pod-key-confidential")
         model = body.get("model", "local-model")
@@ -1834,6 +1980,7 @@ def create_prevalidator_app(
         hash_drift_count = 0
         policy_denied_count = 0
         file_results: list[dict[str, Any]] = []
+        in_memory_enforcer_ns = 0
 
         for file_name, loc, obs_sha in file_candidates:
             snap_entry = entries.get(loc)
@@ -1848,12 +1995,14 @@ def create_prevalidator_app(
             }
             prev_strict = enforcer.strict_inline_hash
             enforcer.strict_inline_hash = False
+            t_eval_ns = time.perf_counter_ns()
             try:
                 outcome = enforcer.evaluate_request(
                     payload=sim_payload,
                     headers={"X-POD-Caller-Key": caller_key},
                 )
             finally:
+                in_memory_enforcer_ns += max(100, time.perf_counter_ns() - t_eval_ns)
                 enforcer.strict_inline_hash = prev_strict
             reasons = outcome.audit_entry.reason_codes
             is_clean_pass = len(reasons) == 0 and outcome.allowed_to_forward
@@ -1919,10 +2068,22 @@ def create_prevalidator_app(
             )
 
         total_count = len(file_candidates)
+        total_wall_ms = round((time.perf_counter_ns() - t_wall_start_ns) / 1_000_000.0, 2)
+        enforcer_ms = round(in_memory_enforcer_ns / 1_000_000.0, 3)
+        avg_file_us = round((in_memory_enforcer_ns / 1_000.0) / max(1, total_count), 1)
+        files_per_sec = round((total_count / max(0.0001, in_memory_enforcer_ns / 1_000_000_000.0)), 1)
+        enforcer.last_directory_scan_metrics = {
+            "total_files": total_count,
+            "total_wall_ms": total_wall_ms,
+            "in_memory_enforcer_ms": enforcer_ms,
+            "avg_per_file_us": avg_file_us,
+            "files_per_sec": files_per_sec,
+        }
+
         pure_unattested = unattested_count - hash_drift_count
         mode_tag = "OBSERVE MODE (Audit-Only — Violations Forwarded & Logged)" if enforcer.mode == "observe" else "ENFORCE MODE (Active Blocking)"
         english_summary = (
-            f"[{mode_tag}] Prevalidator scanned {total_count} total file(s) in '{dir_label}': "
+            f"[{mode_tag}] Prevalidator scanned {total_count} total file(s) in '{dir_label}' in {enforcer_ms} ms in-memory ({avg_file_us} µs/file; {total_wall_ms} ms incl. disk SHA-256): "
             f"{passed_count} of {total_count} file(s) PASSED/FORWARDED ({allow_count} Clean Allowed, {strip_count} Stripped) and "
             f"{failed_count} of {total_count} file(s) BLOCKED "
             f"({pure_unattested} Unattested file(s) with no signed record, "
@@ -1939,6 +2100,7 @@ def create_prevalidator_app(
             "english_summary": english_summary,
             "caller_key": caller_key,
             "model": model,
+            "latency": enforcer.get_latency_telemetry(),
             "files": file_results,
         }
 
@@ -1949,6 +2111,54 @@ def create_prevalidator_app(
             "status": "ok" if snap is not None else "stale_or_missing_snapshot",
             "mode": enforcer.mode,
             "snapshot_sequence": snap["sequence_number"] if snap else None,
+            "latency": enforcer.get_latency_telemetry(),
+        }
+
+    @app.post("/v1/admin/latency-benchmark")
+    async def run_latency_benchmark_endpoint(
+        request: Request,
+        x_pod_admin_key: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        if x_pod_admin_key != admin_key:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid X-POD-Admin-Key")
+        body = await request.json()
+        iterations = min(500, max(10, int(body.get("iterations", 100))))
+        prompts = [
+            (
+                "gpt-4o",
+                "pod-key-public",
+                'Summarize doc:\n<pod:object locator="file://estate/fileshare/product_overview_public.md">Open Source AI Architecture Overview</pod:object>',
+            ),
+            (
+                "local-model",
+                "pod-key-confidential",
+                'HR policy guidance:\n<pod:object locator="file://estate/fileshare/dept_compensation_confidential.xlsx">diana.prince@example.org | salary: $145,000</pod:object>',
+            ),
+            (
+                "gpt-4o",
+                "pod-key-restricted",
+                'Analyze intake:\n<pod:object locator="file://estate/fileshare/clinical_intake_restricted.txt">Patient SSN: 412-58-9021, MRN-8839201</pod:object>',
+            ),
+            (
+                "gpt-4o",
+                "pod-key-public",
+                '<pod:object locator="file://estate/fileshare/unverified_notes_ambiguous.txt">AMBIGUOUS_REF_9042</pod:object>',
+            ),
+        ]
+        t0_ns = time.perf_counter_ns()
+        for idx in range(iterations):
+            model_id, caller_k, content = prompts[idx % len(prompts)]
+            enforcer.evaluate_request(
+                payload={"model": model_id, "messages": [{"role": "user", "content": content}]},
+                headers={"X-POD-Caller-Key": caller_k},
+            )
+        wall_ms = round((time.perf_counter_ns() - t0_ns) / 1_000_000.0, 3)
+        avg_us = round(((time.perf_counter_ns() - t0_ns) / 1_000.0) / iterations, 2)
+        return {
+            "iterations": iterations,
+            "benchmark_wall_ms": wall_ms,
+            "avg_eval_us": avg_us,
+            "latency": enforcer.get_latency_telemetry(),
         }
 
     @app.get("/v1/admin/llm-config")

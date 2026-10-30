@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -59,6 +60,8 @@ class AuditLogEntry:
     caller_clearance: str
     target_egress: str
     stripped_locators: list[str] = field(default_factory=list)
+    decision_latency_ms: float = 0.0
+    decision_latency_us: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -70,6 +73,8 @@ class AuditLogEntry:
             "caller_clearance": self.caller_clearance,
             "target_egress": self.target_egress,
             "stripped_locators": self.stripped_locators,
+            "decision_latency_ms": self.decision_latency_ms,
+            "decision_latency_us": self.decision_latency_us,
         }
 
 
@@ -81,6 +86,8 @@ class EnforcementOutcome:
     transformed_payload: dict[str, Any]
     client_denial_body: dict[str, Any] | None
     audit_entry: AuditLogEntry
+    decision_latency_ms: float = 0.0
+    decision_latency_us: float = 0.0
 
 
 class InMemorySnapshotStore:
@@ -177,6 +184,68 @@ class PrevalidatorEnforcer:
         )
         self.classifier = PresidioClassifier()
         self.audit_log: list[AuditLogEntry] = []
+        self.latency_samples_ms: list[float] = []
+        self.total_evaluations: int = 0
+        self.last_directory_scan_metrics: dict[str, Any] = {
+            "total_files": 0,
+            "total_wall_ms": 0.0,
+            "in_memory_enforcer_ms": 0.0,
+            "avg_per_file_us": 0.0,
+            "files_per_sec": 0.0,
+        }
+
+    def _record_latency_ns(self, elapsed_ns: int) -> tuple[float, float]:
+        ms = round(max(elapsed_ns, 100) / 1_000_000.0, 4)
+        us = round(max(elapsed_ns, 100) / 1_000.0, 2)
+        self.total_evaluations += 1
+        self.latency_samples_ms.append(ms)
+        if len(self.latency_samples_ms) > 500:
+            self.latency_samples_ms = self.latency_samples_ms[-500:]
+        return ms, us
+
+    def get_latency_telemetry(self) -> dict[str, Any]:
+        """Return real-time sub-millisecond latency clock metrics for the Prevalidator."""
+        samples = list(self.latency_samples_ms)
+        if not samples:
+            return {
+                "last_decision_ms": 0.0,
+                "last_decision_us": 0.0,
+                "avg_ms": 0.0,
+                "p50_ms": 0.0,
+                "p95_ms": 0.0,
+                "p99_ms": 0.0,
+                "min_ms": 0.0,
+                "max_ms": 0.0,
+                "total_evaluations": self.total_evaluations,
+                "sla_budget_ms": 5.0,
+                "sla_compliant_pct": 100.0,
+                "recent_samples_ms": [],
+                "last_directory_scan": self.last_directory_scan_metrics,
+            }
+        sorted_s = sorted(samples)
+        n = len(sorted_s)
+
+        def _pct(p: float) -> float:
+            idx = min(n - 1, max(0, int(round((p / 100.0) * (n - 1)))))
+            return round(sorted_s[idx], 4)
+
+        last_ms = samples[-1]
+        compliant = sum(1 for x in samples if x <= 5.0)
+        return {
+            "last_decision_ms": round(last_ms, 4),
+            "last_decision_us": round(last_ms * 1000.0, 2),
+            "avg_ms": round(sum(samples) / n, 4),
+            "p50_ms": _pct(50.0),
+            "p95_ms": _pct(95.0),
+            "p99_ms": _pct(99.0),
+            "min_ms": round(sorted_s[0], 4),
+            "max_ms": round(sorted_s[-1], 4),
+            "total_evaluations": self.total_evaluations,
+            "sla_budget_ms": 5.0,
+            "sla_compliant_pct": round((compliant / n) * 100.0, 2),
+            "recent_samples_ms": [round(x, 4) for x in samples[-24:]],
+            "last_directory_scan": self.last_directory_scan_metrics,
+        }
 
     def resolve_caller_clearance(self, headers: dict[str, str]) -> str:
         """Resolve caller clearance from verified JWT or configured caller API key (defaults to 'Public')."""
@@ -363,6 +432,7 @@ class PrevalidatorEnforcer:
         now: datetime | None = None,
     ) -> EnforcementOutcome:
         """Evaluate an OpenAI `/v1/chat/completions` or Anthropic `/v1/messages` request payload."""
+        t0_ns = time.perf_counter_ns()
         now_dt = now or datetime.now(timezone.utc)
         now_str = format_iso8601(now_dt)
         hdrs = headers or {}
@@ -374,6 +444,7 @@ class PrevalidatorEnforcer:
         snapshot = self.snapshot_store.get_active_snapshot(now=now_dt)
         if snapshot is None:
             # Staleness or missing snapshot MUST fail closed
+            lat_ms, lat_us = self._record_latency_ns(time.perf_counter_ns() - t0_ns)
             audit = AuditLogEntry(
                 timestamp=now_str,
                 mode=self.mode,
@@ -382,6 +453,8 @@ class PrevalidatorEnforcer:
                 locators_evaluated=[],
                 caller_clearance=caller_clearance,
                 target_egress=target_egress,
+                decision_latency_ms=lat_ms,
+                decision_latency_us=lat_us,
             )
             self.audit_log.append(audit)
             return EnforcementOutcome(
@@ -389,6 +462,8 @@ class PrevalidatorEnforcer:
                 transformed_payload=payload,
                 client_denial_body=self._uniform_denial_response(),
                 audit_entry=audit,
+                decision_latency_ms=lat_ms,
+                decision_latency_us=lat_us,
             )
 
         entries = snapshot.get("entries", {})
@@ -529,6 +604,7 @@ class PrevalidatorEnforcer:
         unique_reasons = list(dict.fromkeys(reason_codes))
 
         if unique_reasons:
+            lat_ms, lat_us = self._record_latency_ns(time.perf_counter_ns() - t0_ns)
             if self.mode == "observe":
                 audit = AuditLogEntry(
                     timestamp=now_str,
@@ -539,6 +615,8 @@ class PrevalidatorEnforcer:
                     caller_clearance=caller_clearance,
                     target_egress=target_egress,
                     stripped_locators=stripped_locators,
+                    decision_latency_ms=lat_ms,
+                    decision_latency_us=lat_us,
                 )
                 self.audit_log.append(audit)
                 return EnforcementOutcome(
@@ -546,6 +624,8 @@ class PrevalidatorEnforcer:
                     transformed_payload=new_payload,
                     client_denial_body=None,
                     audit_entry=audit,
+                    decision_latency_ms=lat_ms,
+                    decision_latency_us=lat_us,
                 )
 
             audit = AuditLogEntry(
@@ -557,6 +637,8 @@ class PrevalidatorEnforcer:
                 caller_clearance=caller_clearance,
                 target_egress=target_egress,
                 stripped_locators=stripped_locators,
+                decision_latency_ms=lat_ms,
+                decision_latency_us=lat_us,
             )
             self.audit_log.append(audit)
             return EnforcementOutcome(
@@ -564,8 +646,11 @@ class PrevalidatorEnforcer:
                 transformed_payload=new_payload,
                 client_denial_body=self._uniform_denial_response(),
                 audit_entry=audit,
+                decision_latency_ms=lat_ms,
+                decision_latency_us=lat_us,
             )
 
+        lat_ms, lat_us = self._record_latency_ns(time.perf_counter_ns() - t0_ns)
         decision_str = "strip" if stripped_locators else "allow"
         audit = AuditLogEntry(
             timestamp=now_str,
@@ -576,6 +661,8 @@ class PrevalidatorEnforcer:
             caller_clearance=caller_clearance,
             target_egress=target_egress,
             stripped_locators=stripped_locators,
+            decision_latency_ms=lat_ms,
+            decision_latency_us=lat_us,
         )
         self.audit_log.append(audit)
         return EnforcementOutcome(
@@ -583,4 +670,6 @@ class PrevalidatorEnforcer:
             transformed_payload=new_payload,
             client_denial_body=None,
             audit_entry=audit,
+            decision_latency_ms=lat_ms,
+            decision_latency_us=lat_us,
         )
