@@ -33,6 +33,7 @@ from engine.dlp_connectors import (
     extract_purview_label_from_file,
 )
 from engine.pipeline import AttestationEngine
+from engine.storage_connectors import EnterpriseDataStoreManager, is_enterprise_store_uri
 from examples.docker_bootstrap import main as run_bootstrap
 from registry.schema_validator import format_iso8601
 from registry.store import RegistryService
@@ -92,6 +93,7 @@ def create_engine_app() -> FastAPI:
     registry = RegistryService(db_url=db_url)
     engine = AttestationEngine(registry=registry)
     dlp_connector = PurviewMultiCloudConnector(registry=registry, classifier=engine.classifier)
+    store_manager = EnterpriseDataStoreManager(registry=registry, engine=engine, estate_dir=estate_dir)
     publisher = None if snapshot_publisher_url else SnapshotPublisher(registry=registry, ttl_seconds=3600, snapshot_output_path=snapshot_file)
     state = EngineDaemonState()
     scan_lock = threading.Lock()
@@ -219,18 +221,91 @@ def create_engine_app() -> FastAPI:
 
     @app.get("/v1/pc-folders")
     def list_pc_folders() -> dict[str, Any]:
-        """List all selectable drives (C:\\, D:\\) and directories on the PC for the GUI `<select>` dropdown."""
+        """List all selectable Enterprise Data Stores (`s3://`, `azblob://`, `gs://`, `postgres://`, `snowflake://`, `bigquery://`) plus local PC drives (`C:\\`, `D:\\`) and directories."""
         user_dir = Path("/host_user")
         if user_dir.is_dir():
             ensure_sample_pc_demo_folder(user_dir / "pc_demo_folder")
         ws = Path("/host_workspace")
         if ws.is_dir():
             ensure_sample_pc_demo_folder(ws / "pc_demo_folder")
-        return {"folders": discover_selectable_drives_and_directories()}
+
+        pc_items = discover_selectable_drives_and_directories()
+        enterprise_items = [
+            {
+                "path": s["uri"],
+                "label": s["label"],
+                "is_enterprise": True,
+                "provider": s["provider"],
+                "store_kind": s["store_kind"],
+            }
+            for s in store_manager.list_stores()
+        ]
+        # Put featured PC demo folder first, then Enterprise Data Stores, then remaining PC folders
+        combined = []
+        if pc_items:
+            combined.append(pc_items[0])
+        combined.extend(enterprise_items)
+        if len(pc_items) > 1:
+            combined.extend(pc_items[1:])
+        return {"folders": combined, "enterprise_stores": store_manager.list_stores()}
+
+    @app.get("/v1/datastores")
+    def get_enterprise_datastores() -> dict[str, Any]:
+        """List all registered enterprise data stores (`s3://`, `azblob://`, `gs://`, `postgres://`, `snowflake://`, `bigquery://`) and recent storage events."""
+        return {
+            "stores": store_manager.list_stores(),
+            "recent_events": store_manager.event_history[-25:],
+        }
+
+    @app.post("/v1/datastores")
+    def register_enterprise_datastore(payload: dict[str, Any]) -> dict[str, Any]:
+        """Register a new enterprise data store (`s3://`, `azblob://`, `gs://`, `postgres://`, `snowflake://`, `bigquery://`, `databricks://`)."""
+        try:
+            res = store_manager.register_store(payload)
+            return {"registered": True, "store": res["store"], "stores": store_manager.list_stores()}
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/v1/datastores/objects")
+    def list_enterprise_datastore_objects(uri: str = Query(..., description="Enterprise store URI (e.g. s3://bucket/prefix)")) -> dict[str, Any]:
+        """Return the objects/tables and their observed SHA-256 digests in an enterprise store for Prevalidator batch scanning."""
+        store_label, candidates = store_manager.list_objects_for_prevalidation(uri)
+        return {
+            "store_label": store_label,
+            "uri": uri,
+            "objects": [
+                {"file_name": fn, "locator": loc, "observed_sha256": sha}
+                for fn, loc, sha in candidates
+            ],
+        }
+
+    @app.post("/v1/events/storage")
+    def ingest_storage_event(payload: dict[str, Any]) -> dict[str, Any]:
+        """Real-time webhook for AWS S3 EventBridge (`ObjectCreated:Put`, `ObjectRemoved:Delete`), Azure Event Grid, and GCS Pub/Sub."""
+        with scan_lock:
+            evt_res = store_manager.handle_storage_event(payload)
+            env = _publish_and_reload_prevalidator()
+            state.last_scan_at = format_iso8601(datetime.now(timezone.utc))
+            state.scans_completed += 1
+        return {
+            "processed": True,
+            "event": evt_res,
+            "snapshot_signatures": env.get("signatures", []),
+            "recent_events": store_manager.event_history[-25:],
+        }
 
     @app.post("/v1/attest-directory")
     def attest_directory(req: AttestDirectoryRequest) -> dict[str, Any]:
-        """Crawl a directory or entire drive of disparate files (by PC path or browser folder picker upload), classify and issue signed records, and publish a fresh snapshot."""
+        """Crawl an Enterprise Data Store (`s3://`, `azblob://`, `gs://`, `postgres://`, `snowflake://`, `bigquery://`) or a PC directory/drive, classify and issue signed records, and publish a fresh snapshot."""
+        if req.directory_path and is_enterprise_store_uri(req.directory_path):
+            with scan_lock:
+                store_report = store_manager.crawl_and_attest_store(req.directory_path, owner_override=req.owner)
+                env = _publish_and_reload_prevalidator()
+                state.last_scan_at = format_iso8601(datetime.now(timezone.utc))
+                state.scans_completed += 1
+            store_report["snapshot_signatures"] = env.get("signatures", [])
+            return store_report
+
         temp_dir: Path | None = None
         try:
             if req.files:
@@ -336,7 +411,13 @@ def create_engine_app() -> FastAPI:
 
     @app.post("/v1/demo-folder/add-unattested")
     def add_unattested_file(req: AddUnattestedFileRequest) -> dict[str, Any]:
-        """Drop a new unattested file into the target PC directory WITHOUT attesting it, so the user can see the Prevalidator catch and block it."""
+        """Drop a new unattested file/object into the target Enterprise Data Store (`s3://`, `azblob://`, `gs://`, `snowflake://`, etc.) or PC directory WITHOUT attesting it, so the user can see the Prevalidator catch and block it."""
+        if is_enterprise_store_uri(req.directory_path):
+            return store_manager.add_unattested_object_to_store(
+                raw_uri=req.directory_path,
+                object_name=req.filename,
+                sample_text=req.content,
+            )
         try:
             target_dir, locator_base = resolve_pc_directory_path(req.directory_path)
         except FileNotFoundError as exc:

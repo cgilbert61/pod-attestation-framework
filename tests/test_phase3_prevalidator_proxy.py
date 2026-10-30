@@ -471,3 +471,86 @@ def test_adversarial_6_concurrency_ratchet_and_db_chunk_hashes(tmp_path: Path):
     assert enforcer.strict_inline_hash is True
     registry.close()
 
+
+def test_enterprise_data_stores_and_event_webhook(tmp_path: Path):
+    """Test 7: Verify EnterpriseDataStoreManager across S3, Azure ADLS, GCS, Snowflake, BigQuery, custom store registration, and real-time storage event webhook."""
+    from engine.pipeline import AttestationEngine
+    from engine.storage_connectors import EnterpriseDataStoreManager
+
+    db_url = f"sqlite:///{(tmp_path / 'adv7.db').as_posix()}"
+    registry = RegistryService(db_url=db_url, key_dir=tmp_path / "keys")
+    eng = AttestationEngine(registry=registry)
+    mgr = EnterpriseDataStoreManager(registry=registry, engine=eng, estate_dir=tmp_path)
+
+    # 1. Crawl and attest AWS S3 RAG Data Lake
+    s3_uri = "s3://contoso-ai-datalake-prod/rag-corpus"
+    s3_res = mgr.crawl_and_attest_store(s3_uri)
+    assert s3_res["total_files_found"] == 4
+    assert s3_res["attested_active_count"] == 4
+    assert s3_res["etag_fast_path_hits"] == 0
+
+    # Second crawl hits ETag fast-path for all 4 objects
+    s3_res2 = mgr.crawl_and_attest_store(s3_uri)
+    assert s3_res2["etag_fast_path_hits"] == 4
+
+    # 2. Register a custom Snowflake or S3 store and crawl it
+    reg_res = mgr.register_store(
+        {
+            "provider": "AWS S3",
+            "uri": "s3://acme-custom-lake/curated",
+            "name": "Acme Custom S3 Lake",
+            "auth_mode": "iam_role",
+            "region": "us-west-2",
+        }
+    )
+    assert reg_res["registered"] is True
+    custom_crawl = mgr.crawl_and_attest_store("s3://acme-custom-lake/curated")
+    assert custom_crawl["attested_active_count"] == 3
+
+    # 3. Fire real-time ObjectCreated:Put event -> auto-attests new S3 object
+    evt_put = mgr.handle_storage_event(
+        {
+            "store_uri": s3_uri,
+            "event_type": "ObjectCreated:Put",
+            "object_key": "live_stream/public_announcement.md",
+            "sample_text": "Public release note for G1 Docket v0.2.",
+            "sensitivity_label": "Public",
+        }
+    )
+    assert evt_put["action"].startswith("ATTESTED")
+    assert evt_put["tier"] == "Public"
+
+    # Publish snapshot and verify inline <pod:object> for the S3 event object passes Prevalidator
+    pub = SnapshotPublisher(registry=registry, snapshot_output_path=tmp_path / "snap.dsse.json")
+    env = pub.publish_snapshot()
+    store = InMemorySnapshotStore(registry.keyring)
+    store.load_from_envelope(env)
+    enforcer = PrevalidatorEnforcer(snapshot_store=store, mode="enforce", strict_inline_hash=True)
+
+    s3_prompt = f'<pod:object locator="{evt_put["locator"]}">Public release note for G1 Docket v0.2.</pod:object>'
+    out1 = enforcer.evaluate_request(
+        payload={"model": "gpt-4o", "messages": [{"role": "user", "content": s3_prompt}]},
+        headers={"X-POD-Caller-Key": "pod-key-public"},
+    )
+    assert out1.allowed_to_forward is True
+
+    # 4. Fire real-time ObjectRemoved:Delete event -> auto-revokes the S3 object
+    evt_del = mgr.handle_storage_event(
+        {
+            "store_uri": s3_uri,
+            "event_type": "ObjectRemoved:Delete",
+            "locator": evt_put["locator"],
+        }
+    )
+    assert evt_del["action"] == "REVOKED"
+    env2 = pub.publish_snapshot()
+    store.load_from_envelope(env2)
+
+    out2 = enforcer.evaluate_request(
+        payload={"model": "gpt-4o", "messages": [{"role": "user", "content": s3_prompt}]},
+        headers={"X-POD-Caller-Key": "pod-key-public"},
+    )
+    assert out2.allowed_to_forward is False
+    registry.close()
+
+

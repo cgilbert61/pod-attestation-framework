@@ -20,6 +20,7 @@ from engine.directory_bridge import (
     iter_scannable_files,
     resolve_pc_directory_path,
 )
+from engine.storage_connectors import is_enterprise_store_uri
 from prevalidator.enforcer import InMemorySnapshotStore, PrevalidatorEnforcer
 from registry.signing import Keyring, compute_file_sha256
 
@@ -145,6 +146,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
         &#9201; Gate Latency: -- ms
       </span>
       <a href="/dlp" class="btn" style="background: #7c3aed; color: #ffffff; text-decoration: none; margin-left: 0;">&#9729; DLP Connectors (Purview / Cloud)</a>
+      <button class="btn" style="background: #0284c7;" onclick="toggleEnterpriseStoresDrawer()">&#128452; Enterprise Data Stores (S3 / Lakes / Warehouses)</button>
       <button class="btn" style="background: #2563eb;" onclick="toggleLlmConfig()">&#9881; LLM Provider Config</button>
       <button id="toggleModeBtn" class="btn" style="background: #059669; color: #ffffff;" onclick="toggleMode()">&#128737; Mode: ENFORCE (Click &rarr; Observe)</button>
       <a href="/docs" target="_blank">Prevalidator API</a>
@@ -153,6 +155,104 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       <a href="http://localhost:18081/docs" target="_blank">Snapshot API (:18081)</a>
     </div>
   </header>
+
+  <!-- ENTERPRISE DATA STORES & REAL-TIME STORAGE EVENT WEBHOOK DRAWER -->
+  <div id="enterpriseStoresDrawer" class="card" style="display: none; border: 2px solid #0284c7; background: #0f172a;">
+    <h2>
+      <span>&#128452; Enterprise Data Store Connectors (AWS S3, Azure ADLS Gen2 / Blob, GCP GCS, Snowflake, BigQuery, PostgreSQL) &amp; Event Webhooks</span>
+      <button class="btn btn-dark" style="padding: 4px 10px; font-size: 12px;" onclick="toggleEnterpriseStoresDrawer()">&#10005; Close Menu</button>
+    </h2>
+    <div style="display: grid; grid-template-columns: 1.25fr 1fr; gap: 18px; margin-bottom: 12px;">
+      <!-- LEFT: REGISTER OR SELECT AN ENTERPRISE DATA STORE -->
+      <div style="background: #090d16; border: 1px solid var(--border); border-radius: 8px; padding: 14px;">
+        <div style="font-size: 13px; font-weight: 700; color: #38bdf8; margin-bottom: 10px;">
+          1. Register New Enterprise Data Store or Select Pre-Configured Estate
+        </div>
+        <div style="display: grid; grid-template-columns: 1fr 1.6fr; gap: 10px; margin-bottom: 8px;">
+          <div>
+            <label style="font-size: 11.5px; color: var(--muted);">Cloud / Warehouse Provider</label>
+            <select id="dsProviderSelect" onchange="applyDsTemplate()" style="margin-bottom: 0;">
+              <option value="AWS S3">AWS S3 / S3-Compatible Data Lake (s3://)</option>
+              <option value="Azure ADLS Gen2 / Blob">Azure ADLS Gen2 / Blob Storage (azblob://)</option>
+              <option value="GCP Cloud Storage">Google Cloud Storage Lake (gs://)</option>
+              <option value="Snowflake">Snowflake Data Warehouse (snowflake://)</option>
+              <option value="Google BigQuery">Google BigQuery Dataset (bigquery://)</option>
+              <option value="Databricks Unity Catalog">Databricks Unity Catalog (databricks://)</option>
+              <option value="PostgreSQL">PostgreSQL / Operational DB (postgres://)</option>
+            </select>
+          </div>
+          <div>
+            <label style="font-size: 11.5px; color: var(--muted);">Store URI (Bucket/Prefix or Warehouse Dataset/Schema)</label>
+            <input type="text" id="dsUriInput" value="s3://acme-corp-datalake-prod/rag-knowledge" style="margin-bottom: 0;" />
+          </div>
+        </div>
+        <div style="display: grid; grid-template-columns: 1.2fr 1fr 1fr; gap: 10px; margin-bottom: 10px;">
+          <div>
+            <label style="font-size: 11.5px; color: var(--muted);">Display Name</label>
+            <input type="text" id="dsNameInput" value="Acme Corp S3 RAG Knowledge Lake" style="margin-bottom: 0;" />
+          </div>
+          <div>
+            <label style="font-size: 11.5px; color: var(--muted);">Auth Mode (Zero-Secret First)</label>
+            <select id="dsAuthSelect" style="margin-bottom: 0;">
+              <option value="iam_role">AWS IAM Role / IRSA</option>
+              <option value="managed_identity">Azure Managed Identity</option>
+              <option value="workload_identity">GCP Workload Identity / ADC</option>
+              <option value="key_pair">Snowflake Key-Pair Auth</option>
+              <option value="access_key">Scoped Read-Only Access Key</option>
+              <option value="connection_string">Database Connection URI</option>
+            </select>
+          </div>
+          <div>
+            <label style="font-size: 11.5px; color: var(--muted);">Region / Endpoint</label>
+            <input type="text" id="dsRegionInput" value="us-east-1" style="margin-bottom: 0;" />
+          </div>
+        </div>
+        <div style="display: flex; gap: 10px; align-items: center;">
+          <button class="btn btn-green" onclick="registerAndSelectStore()">+ Register &amp; Scan Enterprise Store</button>
+          <span id="dsStatusMsg" style="font-size: 12px; color: #34d399;">ETag Fast-Path &amp; Bounded Parquet/Table Sampling Enabled</span>
+        </div>
+      </div>
+
+      <!-- RIGHT: REAL-TIME CLOUD STORAGE EVENT WEBHOOK (S3 EventBridge / Azure Event Grid / GCS PubSub) -->
+      <div style="background: #090d16; border: 1px solid var(--border); border-radius: 8px; padding: 14px;">
+        <div style="font-size: 13px; font-weight: 700; color: #fbbf24; margin-bottom: 8px;">
+          2. Real-Time Storage Event Webhook (<code>POST /v1/events/storage</code>)
+        </div>
+        <div style="font-size: 11.5px; color: var(--muted); margin-bottom: 10px;">
+          Instead of rescanning petabytes, S3 EventBridge, Azure Event Grid, and GCS Pub/Sub push object change notifications here to auto-attest new uploads or auto-revoke deleted objects in real time.
+        </div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px;">
+          <div>
+            <label style="font-size: 11.5px; color: var(--muted);">Event Type</label>
+            <select id="evtTypeSelect" style="margin-bottom: 0;">
+              <option value="ObjectCreated:Put">AWS S3 — ObjectCreated:Put (Auto-Attest)</option>
+              <option value="Microsoft.Storage.BlobCreated">Azure Event Grid — BlobCreated (Auto-Attest)</option>
+              <option value="google.cloud.storage.object.v1.finalized">GCS Pub/Sub — object.finalized (Auto-Attest)</option>
+              <option value="ObjectRemoved:Delete">AWS S3 — ObjectRemoved:Delete (Auto-Revoke)</option>
+            </select>
+          </div>
+          <div>
+            <label style="font-size: 11.5px; color: var(--muted);">Object Key / Table Name</label>
+            <input type="text" id="evtKeyInput" value="live_ingest/q4_board_forecast.parquet" style="margin-bottom: 0;" />
+          </div>
+        </div>
+        <div style="margin-bottom: 8px;">
+          <label style="font-size: 11.5px; color: var(--muted);">Sample Payload Content (Presidio Classified on Ingest)</label>
+          <input type="text" id="evtSampleInput" value="vp_finance: clark.kent@contoso.com | phone: 212-555-0199 | salary: $210,000" style="margin-bottom: 0;" />
+        </div>
+        <div style="display: flex; gap: 8px; align-items: center;">
+          <button class="btn" style="background: #d97706; color: #fff;" onclick="sendStorageWebhookEvent()">&#9889; Fire Storage Webhook Event Now</button>
+          <span id="evtWebhookStatus" style="font-size: 12px; color: #93c5fd;">Ready</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- QUICK-SELECT REGISTERED ENTERPRISE STORES PILLS -->
+    <div style="font-size: 12px; color: var(--muted); margin-bottom: 6px;">
+      <strong>Registered Enterprise Data Stores (Click any store to point Engine &amp; Prevalidator at it):</strong>
+    </div>
+    <div id="registeredStoresPills" style="display: flex; gap: 8px; flex-wrap: wrap;"></div>
+  </div>
 
   <!-- CONFIGURATION MENU DRAWER: POINT AT ANY LLM PROVIDER -->
   <div id="llmConfigDrawer" class="card" style="display: none; border: 2px solid #3b82f6; background: #0f172a;">
@@ -292,20 +392,26 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     </div>
   </div>
 
-  <!-- TOP WORKFLOW: PC DIRECTORY SELECTION + ATTESTATION + PREVALIDATOR DIRECTORY SCAN -->
+  <!-- TOP WORKFLOW: ENTERPRISE DATA STORE OR PC DIRECTORY SELECTION + ATTESTATION + PREVALIDATOR SCAN -->
   <div class="card" style="border-color: #3b82f6;">
     <h2>
-      <span>Point System at Any Directory on Your PC — Attest &amp; Prevalidate Files</span>
+      <span>Point System at Any Enterprise Data Store (<code>s3://</code>, <code>azblob://</code>, <code>gs://</code>, <code>snowflake://</code>, <code>bigquery://</code>, <code>postgres://</code>) or PC Directory</span>
       <span id="folderSourceBadge" class="badge badge-Internal">Direct PC Disk Path</span>
     </h2>
 
-    <div style="display: grid; grid-template-columns: 1.4fr 1fr auto; gap: 14px; align-items: end; margin-bottom: 12px;">
+    <div style="display: grid; grid-template-columns: 1.45fr 0.95fr auto; gap: 14px; align-items: end; margin-bottom: 12px;">
       <div>
         <label style="font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px;">
-          <strong>Select Drive or Directory on Your PC</strong> (Entire Drive <code>C:\</code>, <code>D:\</code>, or any Directory):
+          <strong>Select Enterprise Data Store (S3, Azure ADLS, GCS, Snowflake, BigQuery, Postgres) or Local PC Drive/Folder:</strong>
         </label>
         <select id="pcFolderSelect" style="margin-bottom: 0; font-size: 14px; font-weight: 600;" onchange="selectPresetFolder()">
           <option value="C:\Users\chuck\pc_demo_folder">📁 C:\Users\chuck\pc_demo_folder — Sample Disparate Files</option>
+          <option value="s3://contoso-ai-datalake-prod/rag-corpus">☁️ [AWS S3] s3://contoso-ai-datalake-prod/rag-corpus — Production AI &amp; RAG Data Lake</option>
+          <option value="azblob://contosodatalake.blob.core.windows.net/enterprise-knowledge">☁️ [Azure ADLS Gen2 / Blob] azblob://contosodatalake.blob.core.windows.net/enterprise-knowledge</option>
+          <option value="gs://contoso-vertex-lake-us/curated-zones">☁️ [GCP Cloud Storage] gs://contoso-vertex-lake-us/curated-zones — Vertex AI Data Lake</option>
+          <option value="snowflake://contoso.us-east-1.snowflakecomputing.com/FINANCE_PROD/PUBLIC">☁️ [Snowflake] snowflake://contoso.us-east-1.snowflakecomputing.com/FINANCE_PROD/PUBLIC</option>
+          <option value="bigquery://contoso-gcp-analytics/enterprise_mart">☁️ [Google BigQuery] bigquery://contoso-gcp-analytics/enterprise_mart</option>
+          <option value="postgres://estate-db:5432/estate">☁️ [PostgreSQL] postgres://estate-db:5432/estate — Operational DB (Live SQL)</option>
           <option value="C:\">🖴 C:\ — Entire C: Drive (Recursive Data Scan)</option>
           <option value="D:\">🖴 D:\ — Entire D: Drive (Recursive Data Scan)</option>
         </select>
@@ -314,16 +420,19 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 
       <div>
         <label style="font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px;">
-          <strong>Drill Into Subdirectory</strong> (Select subfolder inside current selection):
+          <strong>Drill Into Subdirectory / Or Enter Custom Store URI</strong> (<code>s3://...</code>, <code>gs://...</code>, <code>D:\...</code>):
         </label>
-        <select id="subDirSelect" style="margin-bottom: 0; font-size: 13px;" onchange="selectSubdirectory()">
-          <option value="">-- Current Selected Drive / Directory --</option>
-        </select>
+        <div style="display: flex; gap: 6px;">
+          <select id="subDirSelect" style="margin-bottom: 0; font-size: 13px;" onchange="selectSubdirectory()">
+            <option value="">-- Current Selected Store / Directory --</option>
+          </select>
+        </div>
       </div>
 
       <div style="display: flex; gap: 8px;">
+        <button class="btn" style="background: #0284c7; white-space: nowrap;" onclick="toggleEnterpriseStoresDrawer()">&#128452; + Connect Cloud Store / S3</button>
         <input type="file" id="winFolderPicker" webkitdirectory directory multiple style="display: none;" onchange="onWinFolderPicked(event)" />
-        <button class="btn" style="white-space: nowrap;" onclick="document.getElementById('winFolderPicker').click()">📂 Or Pick via Windows Explorer</button>
+        <button class="btn" style="white-space: nowrap;" onclick="document.getElementById('winFolderPicker').click()">📂 Or Pick PC Folder</button>
       </div>
     </div>
 
@@ -556,9 +665,189 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     let currentBrowsedPath = "D:\\\\attestation";
     let parentBrowsedPath = "D:\\\\";
 
+    function isEnterpriseUri(val) {
+      if (!val) return false;
+      const lower = val.trim().toLowerCase();
+      return (
+        lower.startsWith('s3://') ||
+        lower.startsWith('azblob://') ||
+        lower.startsWith('abfss://') ||
+        lower.startsWith('gs://') ||
+        lower.startsWith('postgres://') ||
+        lower.startsWith('postgresql://') ||
+        lower.startsWith('snowflake://') ||
+        lower.startsWith('bigquery://') ||
+        lower.startsWith('databricks://') ||
+        lower.startsWith('sharepoint://')
+      );
+    }
+
+    function updateSourceBadgeForPath(val) {
+      const badge = document.getElementById('folderSourceBadge');
+      if (!badge) return;
+      if (isEnterpriseUri(val)) {
+        const scheme = val.split('://')[0].toUpperCase();
+        badge.textContent = `Enterprise Cloud Store (${scheme}://)`;
+        badge.className = 'badge badge-Public';
+      } else {
+        badge.textContent = 'Direct PC Disk Path';
+        badge.className = 'badge badge-Internal';
+      }
+    }
+
     function clearPickedFiles() {
       browserPickedFiles = null;
-      document.getElementById('folderSourceBadge').textContent = 'Direct PC Disk Path';
+      updateSourceBadgeForPath(document.getElementById('pcPathInput').value);
+    }
+
+    function toggleEnterpriseStoresDrawer() {
+      const drawer = document.getElementById('enterpriseStoresDrawer');
+      if (!drawer) return;
+      if (drawer.style.display === 'none' || !drawer.style.display) {
+        drawer.style.display = 'block';
+        loadEnterpriseStoresPills();
+      } else {
+        drawer.style.display = 'none';
+      }
+    }
+
+    function applyDsTemplate() {
+      const prov = document.getElementById('dsProviderSelect').value;
+      const uriEl = document.getElementById('dsUriInput');
+      const nameEl = document.getElementById('dsNameInput');
+      const authEl = document.getElementById('dsAuthSelect');
+      const regEl = document.getElementById('dsRegionInput');
+      if (prov === 'AWS S3') {
+        uriEl.value = 's3://acme-corp-datalake-prod/rag-knowledge';
+        nameEl.value = 'Acme Corp S3 RAG Knowledge Lake';
+        authEl.value = 'iam_role';
+        regEl.value = 'us-east-1';
+      } else if (prov === 'Azure ADLS Gen2 / Blob') {
+        uriEl.value = 'azblob://acmedatalake.blob.core.windows.net/curated-zone';
+        nameEl.value = 'Acme Azure ADLS Gen2 Curated Zone';
+        authEl.value = 'managed_identity';
+        regEl.value = 'eastus2';
+      } else if (prov === 'GCP Cloud Storage') {
+        uriEl.value = 'gs://acme-vertex-rag-lake/embeddings';
+        nameEl.value = 'Acme GCP Vertex AI Embeddings Lake';
+        authEl.value = 'workload_identity';
+        regEl.value = 'us-central1';
+      } else if (prov === 'Snowflake') {
+        uriEl.value = 'snowflake://acme.us-east-1.snowflakecomputing.com/ANALYTICS_PROD/PUBLIC';
+        nameEl.value = 'Acme Snowflake ANALYTICS_PROD Warehouse';
+        authEl.value = 'key_pair';
+        regEl.value = 'us-east-1';
+      } else if (prov === 'Google BigQuery') {
+        uriEl.value = 'bigquery://acme-gcp-data/customer_360';
+        nameEl.value = 'Acme BigQuery customer_360 Dataset';
+        authEl.value = 'workload_identity';
+        regEl.value = 'US';
+      } else if (prov === 'Databricks Unity Catalog') {
+        uriEl.value = 'databricks://acme-lakehouse.cloud.databricks.com/main/gold_rag';
+        nameEl.value = 'Acme Databricks Unity Catalog (main.gold_rag)';
+        authEl.value = 'iam_role';
+        regEl.value = 'us-west-2';
+      } else if (prov === 'PostgreSQL') {
+        uriEl.value = 'postgres://estate-db:5432/estate';
+        nameEl.value = 'PostgreSQL Enterprise Operational DB';
+        authEl.value = 'connection_string';
+        regEl.value = 'local-vpc';
+      }
+    }
+
+    async function loadEnterpriseStoresPills() {
+      try {
+        const resp = await fetch('/v1/admin/datastores', { headers: { 'X-POD-Admin-Key': ADMIN_KEY } });
+        if (!resp.ok) return;
+        const data = await resp.json();
+        const container = document.getElementById('registeredStoresPills');
+        if (!container) return;
+        container.innerHTML = '';
+        (data.stores || []).forEach(s => {
+          const btn = document.createElement('button');
+          btn.className = 'btn btn-dark';
+          btn.style.fontSize = '12px';
+          btn.style.padding = '6px 11px';
+          btn.style.border = '1px solid #0284c7';
+          btn.textContent = `☁️ ${s.provider}: ${s.uri}`;
+          btn.onclick = async () => {
+            await pointAtEnterpriseStore(s.uri, s.label);
+          };
+          container.appendChild(btn);
+        });
+      } catch (e) {}
+    }
+
+    async function pointAtEnterpriseStore(uri, labelText) {
+      const sel = document.getElementById('pcFolderSelect');
+      let exists = Array.from(sel.options).some(o => o.value === uri);
+      if (!exists) {
+        const opt = document.createElement('option');
+        opt.value = uri;
+        opt.textContent = labelText || `☁️ ${uri}`;
+        sel.insertBefore(opt, sel.firstChild);
+      }
+      sel.value = uri;
+      document.getElementById('pcPathInput').value = uri;
+      clearPickedFiles();
+      const subSel = document.getElementById('subDirSelect');
+      subSel.innerHTML = `<option value="">-- Cloud / Warehouse Store: ${uri} --</option>`;
+      await attestSelectedDirectory();
+    }
+
+    async function registerAndSelectStore() {
+      const provider = document.getElementById('dsProviderSelect').value;
+      const uri = document.getElementById('dsUriInput').value.trim();
+      const name = document.getElementById('dsNameInput').value.trim();
+      const auth_mode = document.getElementById('dsAuthSelect').value;
+      const region = document.getElementById('dsRegionInput').value.trim();
+      const statusEl = document.getElementById('dsStatusMsg');
+      statusEl.textContent = 'Registering store...';
+      try {
+        const resp = await fetch('/v1/admin/datastores', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-POD-Admin-Key': ADMIN_KEY },
+          body: JSON.stringify({ provider, uri, name, auth_mode, region })
+        });
+        const data = await resp.json();
+        if (!resp.ok) {
+          statusEl.textContent = 'Error: ' + (data.detail || resp.status);
+          return;
+        }
+        statusEl.textContent = `✔ Registered & activated ${data.store.uri}`;
+        await loadEnterpriseStoresPills();
+        await pointAtEnterpriseStore(data.store.uri, data.store.label);
+      } catch (e) {
+        statusEl.textContent = 'Error: ' + e;
+      }
+    }
+
+    async function sendStorageWebhookEvent() {
+      const curStore = isEnterpriseUri(document.getElementById('pcPathInput').value)
+        ? document.getElementById('pcPathInput').value
+        : 's3://contoso-ai-datalake-prod/rag-corpus';
+      const event_type = document.getElementById('evtTypeSelect').value;
+      const object_key = document.getElementById('evtKeyInput').value.trim();
+      const sample_text = document.getElementById('evtSampleInput').value.trim();
+      const st = document.getElementById('evtWebhookStatus');
+      st.textContent = 'Sending webhook event...';
+      try {
+        const resp = await fetch('/v1/admin/events/storage', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-POD-Admin-Key': ADMIN_KEY },
+          body: JSON.stringify({ store_uri: curStore, event_type, object_key, sample_text })
+        });
+        const data = await resp.json();
+        if (!resp.ok) {
+          st.textContent = 'Error: ' + (data.detail || resp.status);
+          return;
+        }
+        const ev = data.event;
+        st.textContent = `✔ ${ev.action}: ${ev.locator} (Tier: ${ev.tier})`;
+        await pointAtEnterpriseStore(curStore);
+      } catch (e) {
+        st.textContent = 'Error: ' + e;
+      }
     }
 
     async function onWinFolderPicked(event) {
@@ -589,7 +878,12 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       const val = document.getElementById('pcFolderSelect').value;
       document.getElementById('pcPathInput').value = val;
       clearPickedFiles();
-      await loadSubdirectoriesIntoSelect(val);
+      if (isEnterpriseUri(val)) {
+        const subSel = document.getElementById('subDirSelect');
+        subSel.innerHTML = `<option value="">-- Cloud / Enterprise Store: ${val} --</option>`;
+      } else {
+        await loadSubdirectoriesIntoSelect(val);
+      }
       await attestSelectedDirectory();
     }
 
@@ -1907,6 +2201,32 @@ def create_prevalidator_app(
             r = await client.get(f"{engine_url}/v1/pc-folders")
             return JSONResponse(status_code=r.status_code, content=r.json())
 
+    @app.get("/v1/admin/datastores")
+    async def proxy_get_datastores(x_pod_admin_key: str | None = Header(default=None)) -> Any:
+        if x_pod_admin_key != admin_key:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid X-POD-Admin-Key")
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.get(f"{engine_url}/v1/datastores")
+            return JSONResponse(status_code=r.status_code, content=r.json())
+
+    @app.post("/v1/admin/datastores")
+    async def proxy_register_datastore(request: Request, x_pod_admin_key: str | None = Header(default=None)) -> Any:
+        if x_pod_admin_key != admin_key:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid X-POD-Admin-Key")
+        body = await request.json()
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            r = await client.post(f"{engine_url}/v1/datastores", json=body)
+            return JSONResponse(status_code=r.status_code, content=r.json())
+
+    @app.post("/v1/admin/events/storage")
+    async def proxy_storage_event(request: Request, x_pod_admin_key: str | None = Header(default=None)) -> Any:
+        if x_pod_admin_key != admin_key:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid X-POD-Admin-Key")
+        body = await request.json()
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            r = await client.post(f"{engine_url}/v1/events/storage", json=body)
+            return JSONResponse(status_code=r.status_code, content=r.json())
+
     @app.post("/v1/admin/attest-directory")
     async def proxy_attest_directory(request: Request, x_pod_admin_key: str | None = Header(default=None)) -> Any:
         if x_pod_admin_key != admin_key:
@@ -1954,6 +2274,15 @@ def create_prevalidator_app(
                 sha = compute_bytes_sha256_hex(raw_bytes)
                 loc = f"file://pc-dir/{folder_slug}/{rel_inside}"
                 file_candidates.append((rel_inside, loc, sha))
+        elif directory_path and is_enterprise_store_uri(directory_path):
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                r_objs = await client.get(f"{engine_url}/v1/datastores/objects", params={"uri": directory_path})
+                if r_objs.status_code != 200:
+                    raise HTTPException(status_code=r_objs.status_code, detail=r_objs.text)
+                obj_data = r_objs.json()
+                dir_label = obj_data.get("store_label") or directory_path
+                for item in obj_data.get("objects", []):
+                    file_candidates.append((item["file_name"], item["locator"], item["observed_sha256"]))
         elif directory_path:
             max_files = int(body.get("max_files", 120))
             try:
