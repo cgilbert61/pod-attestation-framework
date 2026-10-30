@@ -396,7 +396,10 @@ class ContinuousDeltaCrawler:
 
             locator = f"{locator_base.rstrip('/')}/{rel_posix}"
             seen_locators.add(locator)
-            win_display = f"{raw_path.rstrip('\\')}\\{rel_posix.replace('/', '\\')}"
+            sep = "\\"
+            base_clean = raw_path.rstrip(sep)
+            rel_win = rel_posix.replace("/", sep)
+            win_display = f"{base_clean}{sep}{rel_win}"
 
             try:
                 st = fpath.stat()
