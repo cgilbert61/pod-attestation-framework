@@ -554,3 +554,61 @@ def test_enterprise_data_stores_and_event_webhook(tmp_path: Path):
     registry.close()
 
 
+@pytest.mark.asyncio
+async def test_continuous_delta_crawler_pass1_skip_pass2_delta_and_auto_revoke(tmp_path: Path):
+    """Test 8: Verify ContinuousDeltaCrawler Pass 1 mtime/size skip, Pass 2 delta attestation, rolling micro-snapshot publishing, and auto-revocation on file deletion."""
+    import threading
+    from engine.continuous_crawler import ContinuousDeltaCrawler
+    from engine.pipeline import AttestationEngine
+    from engine.storage_connectors import EnterpriseDataStoreManager
+
+    db_url = f"sqlite:///{(tmp_path / 'adv8.db').as_posix()}"
+    registry = RegistryService(db_url=db_url, key_dir=tmp_path / "keys")
+    eng = AttestationEngine(registry=registry)
+    mgr = EnterpriseDataStoreManager(registry=registry, engine=eng, estate_dir=tmp_path)
+    pub = SnapshotPublisher(registry=registry, snapshot_output_path=tmp_path / "snap.dsse.json")
+
+    scan_dir = tmp_path / "live_root"
+    scan_dir.mkdir(parents=True, exist_ok=True)
+    f1 = scan_dir / "doc_a.txt"
+    f2 = scan_dir / "doc_b_conf.txt"
+    f1.write_text("Public technical note", encoding="utf-8")
+    f2.write_text("Contact: bruce.wayne@wayneenterprises.com | salary: $250,000", encoding="utf-8")
+
+    crawler = ContinuousDeltaCrawler(
+        registry=registry,
+        engine=eng,
+        store_manager=mgr,
+        publish_snapshot_fn=pub.publish_snapshot,
+        scan_lock=threading.Lock(),
+    )
+    crawler.running = True
+    crawler.throttle_ms_per_file = 0.0
+    crawler.micro_publish_delta_threshold = 2
+
+    # First sweep: both files are new deltas -> Pass 2 deep scan & rolling micro-snapshot published
+    await crawler._sweep_pc_filesystem_target(str(scan_dir))
+    tel1 = crawler.get_telemetry()
+    assert tel1["files_swept"] == 2
+    assert tel1["deltas_attested"] == 2
+    assert tel1["unchanged_skipped"] == 0
+    assert tel1["micro_snapshots_published"] >= 1
+    assert len(tel1["ticker_feed"]) >= 2
+
+    # Second sweep: neither file changed -> Pass 1 mtime_ns + size_bytes skips both in 0 bytes read!
+    await crawler._sweep_pc_filesystem_target(str(scan_dir))
+    tel2 = crawler.get_telemetry()
+    assert tel2["files_swept"] == 4
+    assert tel2["deltas_attested"] == 2
+    assert tel2["unchanged_skipped"] == 2
+
+    # Delete f1 -> Third sweep auto-revokes f1 and skips unchanged f2
+    f1.unlink()
+    await crawler._sweep_pc_filesystem_target(str(scan_dir))
+    tel3 = crawler.get_telemetry()
+    assert tel3["deleted_revoked"] == 1
+    assert tel3["unchanged_skipped"] == 3
+    registry.close()
+
+
+

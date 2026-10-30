@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from engine.classifier import CategoryFinding, PresidioClassifier
-from engine.directory_bridge import iter_scannable_files
+from engine.directory_bridge import iter_scannable_files, iter_scannable_files_unbounded
 from engine.dlp_connectors import extract_purview_label_from_file
 from engine.extractor import TikaDocumentExtractor
 from engine.openlineage_intake import OpenLineageIntake
@@ -115,6 +115,7 @@ class AttestationEngine:
         locator_base: str | None = None,
         environment: str = "production",
         max_files: int = 120,
+        include_code_dirs: bool = False,
     ) -> list[dict[str, Any]]:
         """Crawl a directory tree or entire drive, extract with Tika, classify with Presidio, and issue/update records."""
         root = Path(root_dir).resolve()
@@ -122,9 +123,8 @@ class AttestationEngine:
             raise NotADirectoryError(f"Directory not found: {root}")
 
         results: list[dict[str, Any]] = []
-        for path in iter_scannable_files(root, max_files=max_files):
+        for path, rel in iter_scannable_files_unbounded(root, include_code_dirs=include_code_dirs):
             try:
-                rel = path.relative_to(root).as_posix()
                 loc_override = f"{locator_base.rstrip('/')}/{rel}" if locator_base else None
                 res = self.attest_file(
                     file_path=path,
@@ -133,6 +133,8 @@ class AttestationEngine:
                     environment=environment,
                 )
                 results.append(res)
+                if max_files > 0 and len(results) >= max_files:
+                    break
             except Exception:
                 continue
         return results

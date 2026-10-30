@@ -18,6 +18,7 @@ from engine.directory_bridge import (
     compute_bytes_sha256_hex,
     discover_selectable_drives_and_directories,
     iter_scannable_files,
+    iter_scannable_files_unbounded,
     resolve_pc_directory_path,
 )
 from engine.storage_connectors import is_enterprise_store_uri
@@ -146,6 +147,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
         &#9201; Gate Latency: -- ms
       </span>
       <a href="/dlp" class="btn" style="background: #7c3aed; color: #ffffff; text-decoration: none; margin-left: 0;">&#9729; DLP Connectors (Purview / Cloud)</a>
+      <button class="btn" style="background: #0d9488; color: #ffffff;" onclick="toggleEnterpriseScannerDrawer()">&#128640; Enterprise Continuous Scanner</button>
       <button class="btn" style="background: #0284c7;" onclick="toggleEnterpriseStoresDrawer()">&#128452; Enterprise Data Stores (S3 / Lakes / Warehouses)</button>
       <button class="btn" style="background: #2563eb;" onclick="toggleLlmConfig()">&#9881; LLM Provider Config</button>
       <button id="toggleModeBtn" class="btn" style="background: #059669; color: #ffffff;" onclick="toggleMode()">&#128737; Mode: ENFORCE (Click &rarr; Observe)</button>
@@ -155,6 +157,75 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       <a href="http://localhost:18081/docs" target="_blank">Snapshot API (:18081)</a>
     </div>
   </header>
+
+  <!-- ENTERPRISE CONTINUOUS DELTA SCANNER CONFIGURATION DRAWER -->
+  <div id="enterpriseScannerDrawer" class="card" style="display: none; border: 2px solid #0d9488; background: #0f172a;">
+    <h2>
+      <span>&#128640; Enterprise Continuous Background Delta Crawler — Configure What Is Scanned &amp; Rolling Micro-Snapshot Policy</span>
+      <button class="btn btn-dark" style="padding: 4px 10px; font-size: 12px;" onclick="toggleEnterpriseScannerDrawer()">&#10005; Close Menu</button>
+    </h2>
+    <div style="display: grid; grid-template-columns: 1.45fr 1fr; gap: 18px;">
+      <!-- LEFT: CONFIGURE TARGET DRIVES, FOLDERS, S3 BUCKETS & WAREHOUSES -->
+      <div style="background: #090d16; border: 1px solid var(--border); border-radius: 8px; padding: 14px;">
+        <div style="font-size: 13px; font-weight: 700; color: #2dd4bf; margin-bottom: 8px;">
+          1. Configure Continuous Scan Targets (Drives, Folders, S3 Buckets, Data Lakes &amp; Warehouses)
+        </div>
+        <div style="font-size: 11.5px; color: var(--muted); margin-bottom: 10px;">
+          Check which estates are included in the zero-limit background delta loop, or click <strong>Sweep Only This</strong> to focus the scanner head on a single drive or cloud store:
+        </div>
+        <div id="crawlerTargetCheckboxes" style="max-height: 220px; overflow-y: auto; border: 1px solid #1e293b; border-radius: 6px; padding: 8px; margin-bottom: 10px;"></div>
+        <div style="display: flex; gap: 8px; align-items: center;">
+          <input type="text" id="newCrawlerTargetUri" placeholder="Add drive, folder, or URI (e.g. C:\Users\chuck\Documents or s3://bucket/prefix)" style="margin-bottom: 0; flex: 1;" />
+          <button class="btn btn-green" style="white-space: nowrap;" onclick="addCrawlerTarget()">+ Add Scan Target</button>
+        </div>
+      </div>
+
+      <!-- RIGHT: PASS 1 / PASS 2 DELTA FILTER & ROLLING MICRO-SNAPSHOT SETTINGS -->
+      <div style="background: #090d16; border: 1px solid var(--border); border-radius: 8px; padding: 14px;">
+        <div style="font-size: 13px; font-weight: 700; color: #38bdf8; margin-bottom: 8px;">
+          2. Two-Pass Delta Engine &amp; Rolling Micro-Snapshot Settings
+        </div>
+        <div style="font-size: 11.5px; color: var(--muted); margin-bottom: 10px; line-height: 1.45;">
+          &bull; <strong>Pass 1 (mtime / size / ETag Watermark):</strong> Skips unchanged files in microseconds with 0 disk bytes read.<br/>
+          &bull; <strong>Pass 2 (Deep Hash + Presidio + Chunk Digests):</strong> Runs only on new or modified files.<br/>
+          &bull; <strong>Rolling Micro-Snapshots:</strong> Flushes &amp; signs a new DSSE Snapshot every <em>N</em> deltas while scanning.
+        </div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px;">
+          <div>
+            <label style="font-size: 11.5px; color: var(--muted);">Micro-Snapshot Flush Threshold</label>
+            <select id="crawlerMicroBatchSelect" onchange="saveCrawlerPolicySettings()" style="margin-bottom: 0;">
+              <option value="5">Flush Snapshot Every 5 Deltas</option>
+              <option value="15" selected>Flush Snapshot Every 15 Deltas</option>
+              <option value="50">Flush Snapshot Every 50 Deltas</option>
+              <option value="100">Flush Snapshot Every 100 Deltas</option>
+            </select>
+          </div>
+          <div>
+            <label style="font-size: 11.5px; color: var(--muted);">Scanner Head Pacing</label>
+            <select id="crawlerThrottleSelect" onchange="saveCrawlerPolicySettings()" style="margin-bottom: 0;">
+              <option value="0">Max Speed (0 ms delay — Full I/O Rate)</option>
+              <option value="3.5" selected>Fast Live Ticker (~250+ files/sec)</option>
+              <option value="15">Readable Ticker (~60 files/sec)</option>
+            </select>
+          </div>
+        </div>
+        <div style="display: flex; gap: 16px; align-items: center; margin-bottom: 12px; font-size: 12.5px;">
+          <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+            <input type="checkbox" id="crawlerIncludeCodeChk" checked onchange="saveCrawlerPolicySettings()" />
+            Include Code &amp; Hidden Folders
+          </label>
+          <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+            <input type="checkbox" id="crawlerAutoRevokeChk" checked onchange="saveCrawlerPolicySettings()" />
+            Auto-Revoke Deleted Files
+          </label>
+        </div>
+        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+          <button class="btn btn-green" onclick="saveCrawlerTargetsSelection()">&#10004; Save Target Selection</button>
+          <button class="btn btn-amber" onclick="resetCrawlerWatermarks()">&#128260; Clear Watermarks (Force Full Deep Re-Scan)</button>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <!-- ENTERPRISE DATA STORES & REAL-TIME STORAGE EVENT WEBHOOK DRAWER -->
   <div id="enterpriseStoresDrawer" class="card" style="display: none; border: 2px solid #0284c7; background: #0f172a;">
@@ -392,6 +463,63 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     </div>
   </div>
 
+  <!-- LIVE CONTINUOUS ENTERPRISE DELTA SCANNER TELEMETRY BAR ("WHAT IS BEING SCANNED FLASHING BY") -->
+  <div class="card" style="border-color: #0d9488; background: linear-gradient(180deg, #091520 0%, #0f172a 100%); margin-bottom: 18px;">
+    <h2 style="border-bottom-color: #1e293b;">
+      <span style="display: flex; align-items: center; gap: 10px;">
+        <span style="font-size: 18px;">&#128640;</span>
+        <span>Enterprise Continuous Background Delta Crawler (Zero File Limits &bull; 2-Pass mtime/ETag Filter &bull; Rolling Micro-Snapshots)</span>
+        <span id="crawlerStateBadge" class="badge badge-Public">SWEEPING LIVE</span>
+      </span>
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <button id="crawlerToggleBtn" class="btn btn-amber" style="padding: 6px 12px; font-size: 12px;" onclick="toggleContinuousCrawlerRun()">&#9208; Pause Continuous Scanner</button>
+        <button class="btn" style="background: #0d9488; padding: 6px 12px; font-size: 12px;" onclick="sweepSelectedTargetUnbounded()">&#127919; Sweep Selected Drive/Store Unbounded</button>
+        <button class="btn btn-dark" style="padding: 6px 12px; font-size: 12px;" onclick="resetCrawlerWatermarks()">&#128260; Force Deep Re-Scan</button>
+        <button class="btn btn-dark" style="padding: 6px 12px; font-size: 12px;" onclick="toggleEnterpriseScannerDrawer()">&#9881; Configure What Is Scanned</button>
+      </div>
+    </h2>
+
+    <!-- ROLLING COUNTERS -->
+    <div style="display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin: 10px 0;">
+      <div class="score-box" style="margin: 0; padding: 10px;">
+        <div class="lbl">Files Swept (Zero Cap)</div>
+        <div id="crFilesSwept" class="num" style="font-size: 22px; color: #f8fafc; font-family: ui-monospace, monospace;">0</div>
+        <div id="crPassNum" style="font-size: 11px; color: var(--muted);">Pass #1 &bull; Watermarks: 0</div>
+      </div>
+      <div class="score-box" style="margin: 0; padding: 10px;">
+        <div class="lbl">Unchanged (Delta Skipped)</div>
+        <div id="crSkipped" class="num" style="font-size: 22px; color: #38bdf8; font-family: ui-monospace, monospace;">0</div>
+        <div style="font-size: 11px; color: var(--muted);">Pass 1: mtime / size / ETag match</div>
+      </div>
+      <div class="score-box" style="margin: 0; padding: 10px;">
+        <div class="lbl">New / Modified Attested</div>
+        <div id="crDeltas" class="num" style="font-size: 22px; color: #34d399; font-family: ui-monospace, monospace;">0</div>
+        <div id="crRevoked" style="font-size: 11px; color: var(--muted);">Pass 2 Deep Scan &bull; Revoked: 0</div>
+      </div>
+      <div class="score-box" style="margin: 0; padding: 10px;">
+        <div class="lbl">Live Scan Rate</div>
+        <div id="crRate" class="num" style="font-size: 22px; color: #fbbf24; font-family: ui-monospace, monospace;">0 /s</div>
+        <div id="crTargetNow" style="font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">Target: -</div>
+      </div>
+      <div class="score-box" style="margin: 0; padding: 10px;">
+        <div class="lbl">Rolling Micro-Snapshots</div>
+        <div id="crSnapshots" class="num" style="font-size: 22px; color: #a78bfa; font-family: ui-monospace, monospace;">0</div>
+        <div id="crPendingDeltas" style="font-size: 11px; color: var(--muted);">Pending flush: 0 deltas</div>
+      </div>
+    </div>
+
+    <!-- REAL-TIME FLASHING FILE TICKER ("WHAT IS BEING SCANNED FLASHING BY") -->
+    <div style="background: #04070e; border: 1px solid #0d9488; border-radius: 8px; padding: 10px 14px; font-family: ui-monospace, SFMono-Regular, Consolas, monospace;">
+      <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #1e293b; padding-bottom: 6px; margin-bottom: 6px;">
+        <div style="font-size: 12px; color: #2dd4bf; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+          &#9889; ACTIVE SCANNER HEAD: <span id="crCurrentHeadFile" style="color: #f8fafc;">Initializing continuous delta crawler...</span>
+        </div>
+        <span style="font-size: 10.5px; color: #64748b; white-space: nowrap; margin-left: 10px;">Live Stream (Pass 1 Skip vs Pass 2 Delta)</span>
+      </div>
+      <div id="crTickerStream" style="height: 112px; overflow-y: auto; font-size: 11.5px; line-height: 1.55; color: #cbd5e1;"></div>
+    </div>
+  </div>
+
   <!-- TOP WORKFLOW: ENTERPRISE DATA STORE OR PC DIRECTORY SELECTION + ATTESTATION + PREVALIDATOR SCAN -->
   <div class="card" style="border-color: #3b82f6;">
     <h2>
@@ -455,9 +583,22 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       <div id="browserSubdirs"></div>
     </div>
 
-    <div style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap; padding-top: 10px; border-top: 1px solid var(--border);">
+    <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding-top: 10px; border-top: 1px solid var(--border);">
       <button id="runAttestBtn" class="btn btn-green" onclick="attestSelectedDirectory()">1. Run Attestation on Directory (Engine)</button>
-      <button class="btn btn-amber" onclick="dropUnattestedFile()">+ Add Unattested File to This Directory</button>
+      <div style="display: flex; align-items: center; gap: 6px; background: #090d16; border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px;">
+        <span style="font-size: 11.5px; color: var(--muted);">Demo File Cap:</span>
+        <select id="demoMaxFilesSelect" style="width: 155px; margin-bottom: 0; padding: 4px 6px; font-size: 12px;">
+          <option value="120" selected>120 Files (Fast Demo)</option>
+          <option value="500">500 Files (Medium)</option>
+          <option value="2500">2,500 Files (Deep)</option>
+          <option value="0">Unbounded (All Files)</option>
+        </select>
+        <label style="font-size: 11.5px; color: var(--muted); display: flex; align-items: center; gap: 4px; cursor: pointer; white-space: nowrap;">
+          <input type="checkbox" id="demoIncludeCodeChk" /> +Code Dirs
+        </label>
+      </div>
+      <button class="btn" style="background: #0d9488;" onclick="sweepSelectedTargetUnbounded()">&#128640; Enterprise Continuous Sweep This Target</button>
+      <button class="btn btn-amber" onclick="dropUnattestedFile()">+ Add Unattested File</button>
       <div style="margin-left: auto; display: flex; gap: 8px; align-items: center;">
         <span style="font-size: 12px; color: var(--muted);">Caller Clearance:</span>
         <select id="dirCallerKey" style="width: 185px; margin-bottom: 0;">
@@ -1020,9 +1161,11 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       document.getElementById('attestStatusText').textContent = 'Scanning & signing files...';
       document.getElementById('attestEnglishBanner').innerHTML = '<strong>Scanning &amp; signing files in directory...</strong>';
       try {
+        const maxFilesVal = parseInt(document.getElementById('demoMaxFilesSelect')?.value ?? '120', 10);
+        const includeCodeVal = Boolean(document.getElementById('demoIncludeCodeChk')?.checked);
         const body = browserPickedFiles
           ? { files: browserPickedFiles }
-          : { directory_path: document.getElementById('pcPathInput').value };
+          : { directory_path: document.getElementById('pcPathInput').value, max_files: maxFilesVal, include_code_dirs: includeCodeVal };
 
         const resp = await fetch('/v1/admin/attest-directory', {
           method: 'POST',
@@ -1089,9 +1232,11 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       document.getElementById('prevalStatusText').textContent = 'Scanning directory against signed snapshot...';
       const callerKey = document.getElementById('dirCallerKey').value.toLowerCase();
       const model = document.getElementById('dirModelSelect').value;
+      const maxFilesVal = parseInt(document.getElementById('demoMaxFilesSelect')?.value ?? '120', 10);
+      const includeCodeVal = Boolean(document.getElementById('demoIncludeCodeChk')?.checked);
       const body = browserPickedFiles
         ? { files: browserPickedFiles, caller_key: callerKey, model }
-        : { directory_path: document.getElementById('pcPathInput').value, caller_key: callerKey, model };
+        : { directory_path: document.getElementById('pcPathInput').value, caller_key: callerKey, model, max_files: maxFilesVal, include_code_dirs: includeCodeVal };
 
       const resp = await fetch('/v1/prevalidate-directory', {
         method: 'POST',
@@ -1440,11 +1585,178 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       (data.discovered_models || []).forEach(m => ensureModelInDropdowns(m, payload.egress_class));
     }
 
+    let crawlerRunning = true;
+    let lastRenderedSnapshotSeq = null;
+
+    function toggleEnterpriseScannerDrawer() {
+      const drawer = document.getElementById('enterpriseScannerDrawer');
+      if (!drawer) return;
+      if (drawer.style.display === 'none' || !drawer.style.display) {
+        drawer.style.display = 'block';
+        refreshCrawlerTelemetry(true);
+      } else {
+        drawer.style.display = 'none';
+      }
+    }
+
+    function renderCrawlerTargetCheckboxes(targets) {
+      const box = document.getElementById('crawlerTargetCheckboxes');
+      if (!box || !Array.isArray(targets)) return;
+      box.innerHTML = '';
+      targets.forEach((t, idx) => {
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex; justify-content:space-between; align-items:center; padding:5px 6px; border-bottom:1px solid #1e293b; font-size:12px;';
+        const left = document.createElement('label');
+        left.style.cssText = 'display:flex; align-items:center; gap:8px; cursor:pointer; flex:1;';
+        const chk = document.createElement('input');
+        chk.type = 'checkbox';
+        chk.className = 'crawler-target-chk';
+        chk.dataset.uri = t.path_or_uri;
+        chk.checked = Boolean(t.enabled);
+        const span = document.createElement('span');
+        span.textContent = t.label || t.path_or_uri;
+        left.appendChild(chk);
+        left.appendChild(span);
+
+        const focusBtn = document.createElement('button');
+        focusBtn.className = 'btn btn-dark';
+        focusBtn.style.cssText = 'padding:3px 8px; font-size:11px;';
+        focusBtn.textContent = '🎯 Sweep Only This';
+        focusBtn.onclick = async () => {
+          await controlContinuousCrawler({ focus_only_target: t.path_or_uri });
+          renderCrawlerTargetCheckboxes((await (await fetch('/v1/admin/crawler/status', { headers: { 'X-POD-Admin-Key': ADMIN_KEY } })).json()).targets);
+        };
+        row.appendChild(left);
+        row.appendChild(focusBtn);
+        box.appendChild(row);
+      });
+    }
+
+    async function controlContinuousCrawler(payload) {
+      try {
+        const resp = await fetch('/v1/admin/crawler/control', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-POD-Admin-Key': ADMIN_KEY },
+          body: JSON.stringify(payload)
+        });
+        if (!resp.ok) return;
+        const data = await resp.json();
+        applyCrawlerTelemetryToDom(data, false);
+      } catch (e) {}
+    }
+
+    async function toggleContinuousCrawlerRun() {
+      await controlContinuousCrawler({ running: !crawlerRunning });
+    }
+
+    async function resetCrawlerWatermarks() {
+      await controlContinuousCrawler({ reset_watermarks: true, running: true });
+    }
+
+    async function sweepSelectedTargetUnbounded() {
+      const targetUri = document.getElementById('pcPathInput').value;
+      await controlContinuousCrawler({ focus_only_target: targetUri, running: true });
+    }
+
+    async function saveCrawlerTargetsSelection() {
+      const chks = Array.from(document.querySelectorAll('.crawler-target-chk'));
+      const targets = chks.map(c => ({ path_or_uri: c.dataset.uri, enabled: c.checked }));
+      await controlContinuousCrawler({ targets });
+    }
+
+    async function addCrawlerTarget() {
+      const inp = document.getElementById('newCrawlerTargetUri');
+      const uri = (inp.value || '').trim();
+      if (!uri) return;
+      inp.value = '';
+      await controlContinuousCrawler({ add_target_uri: uri, running: true });
+      await refreshCrawlerTelemetry(true);
+    }
+
+    async function saveCrawlerPolicySettings() {
+      const micro_publish_delta_threshold = parseInt(document.getElementById('crawlerMicroBatchSelect').value, 10);
+      const throttle_ms_per_file = parseFloat(document.getElementById('crawlerThrottleSelect').value);
+      const include_code_dirs = Boolean(document.getElementById('crawlerIncludeCodeChk').checked);
+      const auto_revoke_deleted = Boolean(document.getElementById('crawlerAutoRevokeChk').checked);
+      await controlContinuousCrawler({
+        micro_publish_delta_threshold,
+        throttle_ms_per_file,
+        include_code_dirs,
+        auto_revoke_deleted
+      });
+    }
+
+    function applyCrawlerTelemetryToDom(data, renderTargets = false) {
+      if (!data) return;
+      crawlerRunning = Boolean(data.running);
+      const badge = document.getElementById('crawlerStateBadge');
+      const btn = document.getElementById('crawlerToggleBtn');
+      if (badge) {
+        badge.textContent = data.status_label || (crawlerRunning ? 'SWEEPING' : 'PAUSED');
+        badge.className = 'badge ' + (crawlerRunning ? 'badge-Public' : 'badge-Confidential');
+      }
+      if (btn) {
+        if (crawlerRunning) {
+          btn.innerHTML = '&#9208; Pause Continuous Scanner';
+          btn.className = 'btn btn-amber';
+        } else {
+          btn.innerHTML = '&#9654; Resume Continuous Scanner';
+          btn.className = 'btn btn-green';
+        }
+      }
+
+      document.getElementById('crFilesSwept').textContent = Number(data.files_swept || 0).toLocaleString();
+      document.getElementById('crPassNum').textContent = `Pass #${data.pass_number || 1} • Watermarks: ${Number(data.watermark_count || 0).toLocaleString()}`;
+      document.getElementById('crSkipped').textContent = Number(data.unchanged_skipped || 0).toLocaleString();
+      document.getElementById('crDeltas').textContent = Number(data.deltas_attested || 0).toLocaleString();
+      document.getElementById('crRevoked').textContent = `Pass 2 Deep Scan • Revoked: ${data.deleted_revoked || 0}`;
+      document.getElementById('crRate').textContent = `~${Number(data.scan_rate_files_per_sec || 0).toFixed(1)} /s`;
+      document.getElementById('crTargetNow').textContent = `Target: ${data.current_target || '-'}`;
+      document.getElementById('crSnapshots').textContent = `${data.micro_snapshots_published || 0}${data.last_snapshot_seq ? ' (#' + data.last_snapshot_seq + ')' : ''}`;
+      document.getElementById('crPendingDeltas').textContent = `Pending flush: ${data.pending_deltas || 0} deltas`;
+      document.getElementById('crCurrentHeadFile').textContent = data.current_file || 'Idle';
+
+      const streamEl = document.getElementById('crTickerStream');
+      if (streamEl && Array.isArray(data.ticker_feed)) {
+        streamEl.innerHTML = data.ticker_feed.map(item => {
+          if (item.kind === 'delta') {
+            return `<div style="color:#34d399;">[${item.timestamp}] ⚡ <strong>[ATTESTING DELTA]</strong> ${item.path} &rarr; <span class="badge badge-${item.tier || 'Internal'}" style="padding:1px 6px;font-size:10px;">${item.tier || ''}</span> <span style="color:#94a3b8;">(${item.detail}${item.sha256 ? ' • sha256: ' + item.sha256 : ''})</span></div>`;
+          } else if (item.kind === 'snapshot') {
+            return `<div style="color:#a78bfa; font-weight:700;">[${item.timestamp}] 📦 [ROLLING MICRO-SNAPSHOT] ${item.path} — ${item.detail}</div>`;
+          } else if (item.kind === 'revoke') {
+            return `<div style="color:#f87171; font-weight:700;">[${item.timestamp}] 🚫 [REVOKED DELETED] ${item.path} — ${item.detail}</div>`;
+          } else {
+            return `<div style="color:#64748b;">[${item.timestamp}] ⏭ [UNCHANGED SKIP] <span style="color:#94a3b8;">${item.path}</span> (${item.detail})</div>`;
+          }
+        }).join('');
+      }
+
+      if (renderTargets && Array.isArray(data.targets)) {
+        renderCrawlerTargetCheckboxes(data.targets);
+      }
+
+      if (data.last_snapshot_seq && data.last_snapshot_seq !== lastRenderedSnapshotSeq) {
+        lastRenderedSnapshotSeq = data.last_snapshot_seq;
+        refreshState();
+      }
+    }
+
+    async function refreshCrawlerTelemetry(renderTargets = false) {
+      try {
+        const resp = await fetch('/v1/admin/crawler/status', { headers: { 'X-POD-Admin-Key': ADMIN_KEY } });
+        if (!resp.ok) return;
+        const data = await resp.json();
+        applyCrawlerTelemetryToDom(data, renderTargets);
+      } catch (e) {}
+    }
+
     loadPreset('allow');
     loadLlmConfig();
     loadPcFoldersDropdown();
     // Auto-run initial directory attestation and Prevalidator scan so verifiable English counts appear immediately
     attestSelectedDirectory();
+    refreshCrawlerTelemetry(true);
+    setInterval(() => refreshCrawlerTelemetry(false), 650);
   </script>
 </body>
 </html>"""
@@ -2227,6 +2539,23 @@ def create_prevalidator_app(
             r = await client.post(f"{engine_url}/v1/events/storage", json=body)
             return JSONResponse(status_code=r.status_code, content=r.json())
 
+    @app.get("/v1/admin/crawler/status")
+    async def proxy_crawler_status(x_pod_admin_key: str | None = Header(default=None)) -> Any:
+        if x_pod_admin_key != admin_key:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid X-POD-Admin-Key")
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.get(f"{engine_url}/v1/crawler/status")
+            return JSONResponse(status_code=r.status_code, content=r.json())
+
+    @app.post("/v1/admin/crawler/control")
+    async def proxy_crawler_control(request: Request, x_pod_admin_key: str | None = Header(default=None)) -> Any:
+        if x_pod_admin_key != admin_key:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid X-POD-Admin-Key")
+        body = await request.json()
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            r = await client.post(f"{engine_url}/v1/crawler/control", json=body)
+            return JSONResponse(status_code=r.status_code, content=r.json())
+
     @app.post("/v1/admin/attest-directory")
     async def proxy_attest_directory(request: Request, x_pod_admin_key: str | None = Header(default=None)) -> Any:
         if x_pod_admin_key != admin_key:
@@ -2285,17 +2614,19 @@ def create_prevalidator_app(
                     file_candidates.append((item["file_name"], item["locator"], item["observed_sha256"]))
         elif directory_path:
             max_files = int(body.get("max_files", 120))
+            include_code_dirs = bool(body.get("include_code_dirs", False))
             try:
                 target_dir, locator_base = resolve_pc_directory_path(directory_path)
             except FileNotFoundError as exc:
                 raise HTTPException(status_code=404, detail=str(exc)) from exc
 
-            for p in iter_scannable_files(target_dir, max_files=max_files):
+            for p, rel_inside in iter_scannable_files_unbounded(target_dir, include_code_dirs=include_code_dirs):
                 try:
-                    rel_inside = p.relative_to(target_dir).as_posix()
                     sha = compute_file_sha256(p)
                     loc = f"{locator_base.rstrip('/')}/{rel_inside}"
                     file_candidates.append((rel_inside, loc, sha))
+                    if max_files > 0 and len(file_candidates) >= max_files:
+                        break
                 except OSError:
                     continue
         else:

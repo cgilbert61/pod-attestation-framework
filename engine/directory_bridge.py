@@ -90,45 +90,106 @@ SKIP_FILE_EXTENSIONS: frozenset[str] = frozenset(
 MAX_SCANNABLE_FILE_BYTES = 8 * 1024 * 1024  # 8 MB cap per file during directory/drive scans
 
 
-def iter_scannable_files(root: Path, max_files: int = 120) -> list[Path]:
-    """Safely walk a directory or an entire drive (`C:\\`, `D:\\`), skipping OS/system/virtualenv folders and locked files."""
-    collected: list[Path] = []
+OS_ONLY_SKIP_DIR_NAMES: frozenset[str] = frozenset(
+    {
+        "$recycle.bin",
+        "$sysreset",
+        "$windows.~bt",
+        "$windows.~ws",
+        "system volume information",
+        "windows",
+        "perflogs",
+        "recovery",
+        "onedrivetemp",
+        "esd",
+        "cookies",
+        "nethood",
+        "printhood",
+        "recent",
+        "sendto",
+        "start menu",
+        "templates",
+        "documents and settings",
+        "__pycache__",
+        ".git",
+        ".pytest_cache",
+        "pod_attestation.egg-info",
+    }
+)
+
+
+def iter_scannable_files_unbounded(
+    root: Path,
+    include_code_dirs: bool = False,
+):
+    """Generator that walks a directory or entire drive (`C:\\`, `D:\\`) with ZERO file count cap,
+    yielding `(fpath, rel_posix_path)` tuples. When walking `/host_d`, also merges `/app` if `/host_d/attestation` is partial."""
     if not root.is_dir():
-        return collected
+        return
 
-    for dirpath, dirnames, filenames in os.walk(root, topdown=True, onerror=lambda _e: None):
-        # Prune skipped, hidden, and system directories in-place
-        kept_dirs: list[str] = []
-        for d in sorted(dirnames, key=str.lower):
-            if d.startswith(".") or d.startswith("$"):
-                continue
-            if d.lower() in SKIP_DIR_NAMES:
-                continue
-            kept_dirs.append(d)
-        dirnames[:] = kept_dirs
+    skip_set = OS_ONLY_SKIP_DIR_NAMES if include_code_dirs else SKIP_DIR_NAMES
+    seen_rel: set[str] = set()
 
-        for fname in sorted(filenames, key=str.lower):
-            if fname.startswith(".") or fname.startswith("$") or fname.startswith("~"):
-                continue
-            lower_f = fname.lower()
-            if lower_f.startswith("ntuser.") or lower_f in ("hiberfil.sys", "pagefile.sys", "swapfile.sys", "dumpstack.log"):
-                continue
-            ext = Path(fname).suffix.lower()
-            if ext in SKIP_FILE_EXTENSIONS:
-                continue
-            fpath = Path(dirpath) / fname
-            try:
-                if not fpath.is_file() or fpath.is_symlink():
+    def _walk_tree(base_root: Path, rel_prefix: str = ""):
+        for dirpath, dirnames, filenames in os.walk(base_root, topdown=True, onerror=lambda _e: None):
+            kept_dirs: list[str] = []
+            for d in sorted(dirnames, key=str.lower):
+                if d.startswith("$"):
                     continue
-                size = fpath.stat().st_size
-                if size > MAX_SCANNABLE_FILE_BYTES:
+                if not include_code_dirs and d.startswith("."):
                     continue
-            except OSError:
-                continue
-            collected.append(fpath)
-            if len(collected) >= max_files:
-                return collected
+                if d.lower() in skip_set:
+                    continue
+                kept_dirs.append(d)
+            dirnames[:] = kept_dirs
 
+            for fname in sorted(filenames, key=str.lower):
+                if fname.startswith(".") or fname.startswith("$") or fname.startswith("~"):
+                    continue
+                lower_f = fname.lower()
+                if lower_f.startswith("ntuser.") or lower_f in (
+                    "hiberfil.sys",
+                    "pagefile.sys",
+                    "swapfile.sys",
+                    "dumpstack.log",
+                ):
+                    continue
+                ext = Path(fname).suffix.lower()
+                if ext in SKIP_FILE_EXTENSIONS:
+                    continue
+                fpath = Path(dirpath) / fname
+                try:
+                    if not fpath.is_file() or fpath.is_symlink():
+                        continue
+                    size = fpath.stat().st_size
+                    if size > MAX_SCANNABLE_FILE_BYTES:
+                        continue
+                    rel_part = fpath.relative_to(base_root).as_posix()
+                    full_rel = f"{rel_prefix.rstrip('/')}/{rel_part}".lstrip("/") if rel_prefix else rel_part
+                except OSError:
+                    continue
+                if full_rel not in seen_rel:
+                    seen_rel.add(full_rel)
+                    yield fpath, full_rel
+
+    yield from _walk_tree(root, "")
+
+    # If scanning D:\ (/host_d) inside Docker where /host_d/attestation only has pc_demo_folder, merge /app as attestation/...
+    try:
+        if root.as_posix().rstrip("/") == "/host_d" and Path("/app").is_dir():
+            yield from _walk_tree(Path("/app"), "attestation")
+    except OSError:
+        pass
+
+
+def iter_scannable_files(root: Path, max_files: int = 120, include_code_dirs: bool = False) -> list[Path]:
+    """Safely walk a directory or an entire drive (`C:\\`, `D:\\`), skipping OS/system/virtualenv folders and locked files.
+    Pass `max_files=0` for an unbounded walk."""
+    collected: list[Path] = []
+    for fpath, _rel in iter_scannable_files_unbounded(root, include_code_dirs=include_code_dirs):
+        collected.append(fpath)
+        if max_files > 0 and len(collected) >= max_files:
+            return collected
     return collected
 
 

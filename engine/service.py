@@ -19,6 +19,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
+from engine.continuous_crawler import ContinuousDeltaCrawler
 from engine.directory_bridge import (
     decode_uploaded_files_to_temp,
     discover_selectable_drives_and_directories,
@@ -50,6 +51,7 @@ class AttestDirectoryRequest(BaseModel):
     files: list[UploadedFileItem] | None = None
     owner: str = "pc-folder-owner@example.org"
     max_files: int = 120
+    include_code_dirs: bool = False
 
 
 def _build_selectable_directory_enum() -> Any:
@@ -123,6 +125,15 @@ def create_engine_app() -> FastAPI:
             pass
         return env
 
+    crawler = ContinuousDeltaCrawler(
+        registry=registry,
+        engine=engine,
+        store_manager=store_manager,
+        publish_snapshot_fn=_publish_and_reload_prevalidator,
+        scan_lock=scan_lock,
+    )
+    crawler.running = os.environ.get("POD_CONTINUOUS_SCANNER_AUTOSTART", "true").lower() == "true"
+
     def _run_scan_cycle() -> dict[str, Any]:
         with scan_lock:
             fileshare_dir = estate_dir / "fileshare"
@@ -169,10 +180,15 @@ def create_engine_app() -> FastAPI:
         state.last_scan_at = format_iso8601(datetime.now(timezone.utc))
         state.scans_completed = 1
         task = asyncio.create_task(_periodic_loop())
+        crawler_task = asyncio.create_task(crawler.run_forever())
         try:
             yield
         finally:
+            crawler.running = False
+            crawler_task.cancel()
             task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await crawler_task
             with contextlib.suppress(asyncio.CancelledError):
                 await task
             registry.close()
@@ -294,6 +310,16 @@ def create_engine_app() -> FastAPI:
             "recent_events": store_manager.event_history[-25:],
         }
 
+    @app.get("/v1/crawler/status")
+    def get_continuous_crawler_status() -> dict[str, Any]:
+        """Return live telemetry, rolling counters, watermark size, and real-time flashing file ticker from the Continuous Background Delta Crawler."""
+        return crawler.get_telemetry()
+
+    @app.post("/v1/crawler/control")
+    def control_continuous_crawler(payload: dict[str, Any]) -> dict[str, Any]:
+        """Pause/resume the Continuous Delta Crawler, update target list, reset watermarks, or focus on a specific drive/cloud URI."""
+        return crawler.update_config(payload)
+
     @app.post("/v1/attest-directory")
     def attest_directory(req: AttestDirectoryRequest) -> dict[str, Any]:
         """Crawl an Enterprise Data Store (`s3://`, `azblob://`, `gs://`, `postgres://`, `snowflake://`, `bigquery://`) or a PC directory/drive, classify and issue signed records, and publish a fresh snapshot."""
@@ -326,6 +352,7 @@ def create_engine_app() -> FastAPI:
                     locator_base=locator_base,
                     environment="production",
                     max_files=req.max_files,
+                    include_code_dirs=req.include_code_dirs,
                 )
                 env = _publish_and_reload_prevalidator()
                 state.last_scan_at = format_iso8601(datetime.now(timezone.utc))
