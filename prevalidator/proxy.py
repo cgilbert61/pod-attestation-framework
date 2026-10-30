@@ -282,7 +282,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     </div>
 
     <div style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap; padding-top: 10px; border-top: 1px solid var(--border);">
-      <button class="btn btn-green" onclick="attestSelectedDirectory()">1. Run Attestation on Directory (Engine)</button>
+      <button id="runAttestBtn" class="btn btn-green" onclick="attestSelectedDirectory()">1. Run Attestation on Directory (Engine)</button>
       <button class="btn btn-amber" onclick="dropUnattestedFile()">+ Add Unattested File to This Directory</button>
       <div style="margin-left: auto; display: flex; gap: 8px; align-items: center;">
         <span style="font-size: 12px; color: var(--muted);">Caller Clearance:</span>
@@ -298,7 +298,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
           <option value="vpc-model">vpc-model (private_cloud)</option>
           <option value="gpt-4o">gpt-4o (public_api)</option>
         </select>
-        <button class="btn" onclick="prevalidateSelectedDirectory()">2. Run Prevalidator Scan on Directory</button>
+        <button id="runPrevalBtn" class="btn" onclick="prevalidateSelectedDirectory()">2. Run Prevalidator Scan on Directory</button>
       </div>
     </div>
   </div>
@@ -647,41 +647,68 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       } catch (e) {}
     }
 
+    let isAttesting = false;
+
     async function attestSelectedDirectory() {
-      document.getElementById('attestStatusText').textContent = 'Scanning & signing files...';
-      const body = browserPickedFiles
-        ? { files: browserPickedFiles }
-        : { directory_path: document.getElementById('pcPathInput').value };
-
-      const resp = await fetch('/v1/admin/attest-directory', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-POD-Admin-Key': ADMIN_KEY },
-        body: JSON.stringify(body)
-      });
-      const data = await resp.json();
-      if (!resp.ok) {
-        document.getElementById('attestStatusText').textContent = 'Error: ' + (data.detail || resp.status);
-        document.getElementById('attestEnglishBanner').textContent = 'Error: ' + (data.detail || resp.status);
-        return;
+      if (isAttesting) return;
+      isAttesting = true;
+      const btn = document.getElementById('runAttestBtn');
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = '⏳ Running Attestation on Directory...';
       }
-      document.getElementById('attestStatusText').textContent = `Attested ${data.attested_active_count} of ${data.total_files_found} file(s)`;
-      document.getElementById('attestEnglishBanner').innerHTML = `<strong>Verifiable Attestation Count:</strong> ${data.english_summary}`;
-      document.getElementById('attTotal').textContent = data.total_files_found;
-      document.getElementById('attActive').textContent = data.attested_active_count;
-      document.getElementById('attHeld').textContent = data.held_in_review_count;
+      document.getElementById('attestStatusText').textContent = 'Scanning & signing files...';
+      document.getElementById('attestEnglishBanner').innerHTML = '<strong>Scanning &amp; signing files in directory...</strong>';
+      try {
+        const body = browserPickedFiles
+          ? { files: browserPickedFiles }
+          : { directory_path: document.getElementById('pcPathInput').value };
 
-      const tbody = document.querySelector('#attestedFilesTable tbody');
-      tbody.innerHTML = '';
-      (data.files || []).forEach(f => {
-        const tr = document.createElement('tr');
-        tr.innerHTML = `<td><strong>${f.file_name}</strong></td>
-          <td><code>${f.object_type}</code></td>
-          <td><span class="badge badge-${f.tier}">${f.tier}</span></td>
-          <td><code>${f.ai_eligibility} / ${f.egress_class}</code></td>
-          <td><code>${(f.content_sha256 || '').slice(0, 12)}…</code></td>`;
-        tbody.appendChild(tr);
-      });
-      await prevalidateSelectedDirectory();
+        const resp = await fetch('/v1/admin/attest-directory', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-POD-Admin-Key': ADMIN_KEY },
+          body: JSON.stringify(body)
+        });
+        const data = await resp.json();
+        if (!resp.ok) {
+          document.getElementById('attestStatusText').textContent = 'Error: ' + (data.detail || resp.status);
+          document.getElementById('attestEnglishBanner').textContent = 'Error: ' + (data.detail || resp.status);
+          if (btn) {
+            btn.disabled = false;
+            btn.textContent = '1. Run Attestation on Directory (Engine)';
+          }
+          return;
+        }
+        const stamp = new Date().toLocaleTimeString();
+        document.getElementById('attestStatusText').textContent = `✔ Attested ${data.attested_active_count} of ${data.total_files_found} file(s) at ${stamp}`;
+        document.getElementById('attestEnglishBanner').innerHTML = `<strong>Verifiable Attestation Count (${stamp}):</strong> ${data.english_summary}`;
+        document.getElementById('attTotal').textContent = data.total_files_found;
+        document.getElementById('attActive').textContent = data.attested_active_count;
+        document.getElementById('attHeld').textContent = data.held_in_review_count;
+
+        const tbody = document.querySelector('#attestedFilesTable tbody');
+        tbody.innerHTML = '';
+        (data.files || []).forEach(f => {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `<td><strong>${f.file_name}</strong></td>
+            <td><code>${f.object_type}</code></td>
+            <td><span class="badge badge-${f.tier}">${f.tier}</span></td>
+            <td><code>${f.ai_eligibility} / ${f.egress_class}</code></td>
+            <td><code>${(f.content_sha256 || '').slice(0, 12)}…</code></td>`;
+          tbody.appendChild(tr);
+        });
+        if (btn) {
+          btn.textContent = `✔ Attested (${data.attested_active_count}/${data.total_files_found}) — 1. Run Attestation on Directory`;
+        }
+        await prevalidateSelectedDirectory();
+      } catch (err) {
+        document.getElementById('attestStatusText').textContent = 'Error: ' + err;
+      } finally {
+        isAttesting = false;
+        if (btn) {
+          btn.disabled = false;
+        }
+      }
     }
 
     async function dropUnattestedFile() {
@@ -1735,7 +1762,7 @@ def create_prevalidator_app(
         if x_pod_admin_key != admin_key:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid X-POD-Admin-Key")
         body = await request.json()
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=120.0) as client:
             r = await client.post(f"{engine_url}/v1/attest-directory", json=body)
             return JSONResponse(status_code=r.status_code, content=r.json())
 

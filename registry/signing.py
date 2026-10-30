@@ -57,25 +57,28 @@ def compute_extracted_text_and_chunk_hashes(text: str) -> tuple[str, list[str]]:
     seen: dict[str, None] = {}
 
     def _add_chunk(candidate: str) -> None:
+        if len(seen) >= 256:
+            return
         norm_bytes = normalize_canonical_text(candidate)
         if norm_bytes:
             seen[hashlib.sha256(norm_bytes).hexdigest()] = None
-        raw_bytes = candidate.encode("utf-8")
-        if raw_bytes:
-            seen[hashlib.sha256(raw_bytes).hexdigest()] = None
+        if len(seen) < 256:
+            raw_bytes = candidate.encode("utf-8")
+            if raw_bytes:
+                seen[hashlib.sha256(raw_bytes).hexdigest()] = None
 
     if text:
         _add_chunk(text)
         no_cr = unicodedata.normalize("NFC", text).replace("\r", "")
         # 1. Paragraph boundaries
-        for para in re.split(r"\n\s*\n", no_cr):
+        for para in re.split(r"\n\s*\n", no_cr)[:120]:
             para_s = para.strip()
             if not para_s:
                 continue
             _add_chunk(para_s)
             # Sliding 500-character windows if paragraph exceeds 500 chars
             if len(para_s) > 500:
-                for start in range(0, len(para_s), 250):
+                for start in range(0, min(len(para_s), 5000), 250):
                     window = para_s[start : start + 500]
                     if window.strip():
                         _add_chunk(window)
@@ -83,7 +86,7 @@ def compute_extracted_text_and_chunk_hashes(text: str) -> tuple[str, list[str]]:
                         break
 
         # 2. Row / line boundaries
-        lines = [ln.strip() for ln in no_cr.splitlines() if ln.strip()]
+        lines = [ln.strip() for ln in no_cr.splitlines() if ln.strip()][:150]
         for ln in lines:
             _add_chunk(ln)
             # Strip markdown heading prefix (#, ##, etc.) so heading text matches cleanly
@@ -100,7 +103,7 @@ def compute_extracted_text_and_chunk_hashes(text: str) -> tuple[str, list[str]]:
                         for j in range(i + 1, n_cells + 1):
                             _add_chunk(" | ".join(cells[i:j]))
             if len(ln) > 500:
-                for start in range(0, len(ln), 250):
+                for start in range(0, min(len(ln), 5000), 250):
                     window = ln[start : start + 500]
                     if window.strip():
                         _add_chunk(window)
@@ -108,12 +111,12 @@ def compute_extracted_text_and_chunk_hashes(text: str) -> tuple[str, list[str]]:
                         break
 
         # 3. Contiguous multi-line spans (up to 6 consecutive lines)
-        if 1 < len(lines) <= 50:
+        if 1 < len(lines) <= 40:
             for i in range(len(lines)):
                 for span_len in range(2, min(7, len(lines) - i + 1)):
                     _add_chunk("\n".join(lines[i : i + span_len]))
 
-    return extracted_text_sha256, list(seen.keys())
+    return extracted_text_sha256, list(seen.keys())[:256]
 
 
 def compute_file_sha256(path: str | Path) -> str:

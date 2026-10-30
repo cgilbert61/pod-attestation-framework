@@ -7,6 +7,7 @@ import contextlib
 import os
 import shutil
 import tempfile
+import threading
 import uuid
 from datetime import datetime, timezone
 from enum import Enum
@@ -93,6 +94,7 @@ def create_engine_app() -> FastAPI:
     dlp_connector = PurviewMultiCloudConnector(registry=registry, classifier=engine.classifier)
     publisher = None if snapshot_publisher_url else SnapshotPublisher(registry=registry, ttl_seconds=3600, snapshot_output_path=snapshot_file)
     state = EngineDaemonState()
+    scan_lock = threading.Lock()
 
     def _publish_and_reload_prevalidator() -> dict[str, Any]:
         ctrl_headers = {
@@ -101,7 +103,7 @@ def create_engine_app() -> FastAPI:
             "Authorization": f"Bearer {control_token}",
         }
         if snapshot_publisher_url:
-            with httpx.Client(timeout=10.0) as client:
+            with httpx.Client(timeout=60.0) as client:
                 r_pub = client.post(f"{snapshot_publisher_url}/v1/publish", headers=ctrl_headers)
                 r_pub.raise_for_status()
                 env = r_pub.json()
@@ -109,7 +111,7 @@ def create_engine_app() -> FastAPI:
             assert publisher is not None
             env = publisher.publish_snapshot()
         try:
-            with httpx.Client(timeout=5.0) as client:
+            with httpx.Client(timeout=15.0) as client:
                 client.post(
                     f"{prevalidator_url.rstrip('/')}/v1/admin/reload-snapshot",
                     headers=ctrl_headers,
@@ -120,28 +122,29 @@ def create_engine_app() -> FastAPI:
         return env
 
     def _run_scan_cycle() -> dict[str, Any]:
-        fileshare_dir = estate_dir / "fileshare"
-        sqlite_db = estate_dir / "synthetic_estate.db"
-        f_res = []
-        d_res = []
-        if fileshare_dir.is_dir():
-            f_res = engine.crawl_file_share(
-                root_dir=fileshare_dir,
-                owner="fileshare-steward@example.org",
-                locator_base="file://estate/fileshare",
-                environment="production",
-            )
-        if sqlite_db.is_file():
-            d_res = engine.crawl_database(
-                db_url=f"sqlite:///{sqlite_db.as_posix()}",
-                owner="data-platform@example.org",
-                locator_override_base="postgres://estate-db:5432/estate",
-                environment="production",
-            )
-        _publish_and_reload_prevalidator()
-        state.last_scan_at = format_iso8601(datetime.now(timezone.utc))
-        state.scans_completed += 1
-        return {"files_checked": len(f_res), "tables_checked": len(d_res), "last_scan_at": state.last_scan_at}
+        with scan_lock:
+            fileshare_dir = estate_dir / "fileshare"
+            sqlite_db = estate_dir / "synthetic_estate.db"
+            f_res = []
+            d_res = []
+            if fileshare_dir.is_dir():
+                f_res = engine.crawl_file_share(
+                    root_dir=fileshare_dir,
+                    owner="fileshare-steward@example.org",
+                    locator_base="file://estate/fileshare",
+                    environment="production",
+                )
+            if sqlite_db.is_file():
+                d_res = engine.crawl_database(
+                    db_url=f"sqlite:///{sqlite_db.as_posix()}",
+                    owner="data-platform@example.org",
+                    locator_override_base="postgres://estate-db:5432/estate",
+                    environment="production",
+                )
+            _publish_and_reload_prevalidator()
+            state.last_scan_at = format_iso8601(datetime.now(timezone.utc))
+            state.scans_completed += 1
+            return {"files_checked": len(f_res), "tables_checked": len(d_res), "last_scan_at": state.last_scan_at}
 
     async def _periodic_loop() -> None:
         while True:
@@ -241,16 +244,17 @@ def create_engine_app() -> FastAPI:
             else:
                 raise HTTPException(status_code=400, detail="Provide either directory_path or files.")
 
-            crawl_results = engine.crawl_file_share(
-                root_dir=target_dir,
-                owner=req.owner,
-                locator_base=locator_base,
-                environment="production",
-                max_files=req.max_files,
-            )
-            env = _publish_and_reload_prevalidator()
-            state.last_scan_at = format_iso8601(datetime.now(timezone.utc))
-            state.scans_completed += 1
+            with scan_lock:
+                crawl_results = engine.crawl_file_share(
+                    root_dir=target_dir,
+                    owner=req.owner,
+                    locator_base=locator_base,
+                    environment="production",
+                    max_files=req.max_files,
+                )
+                env = _publish_and_reload_prevalidator()
+                state.last_scan_at = format_iso8601(datetime.now(timezone.utc))
+                state.scans_completed += 1
 
             attested_items: list[dict[str, Any]] = []
             held_for_review = 0

@@ -119,6 +119,27 @@ class RegistryService:
         """Dispose underlying SQLAlchemy connection pool."""
         self.engine.dispose()
 
+    def _get_single_current_row(self, session: Session, locator: str) -> AttestationRecordModel | None:
+        """Return the latest `is_current=True` row for `locator`, automatically deduplicating any concurrent active rows."""
+        rows = (
+            session.execute(
+                select(AttestationRecordModel)
+                .where(
+                    AttestationRecordModel.locator == locator,
+                    AttestationRecordModel.is_current.is_(True),
+                )
+                .order_by(AttestationRecordModel.issued_at.desc())
+            )
+            .scalars()
+            .all()
+        )
+        if not rows:
+            return None
+        if len(rows) > 1:
+            for extra in rows[1:]:
+                extra.is_current = False
+        return rows[0]
+
     def _row_to_dict(self, row: AttestationRecordModel) -> dict[str, Any]:
         stmt = json.loads(row.statement_json)
         integrity = stmt.get("predicate", {}).get("integrity", {})
@@ -129,7 +150,7 @@ class RegistryService:
             "content_sha256": row.content_sha256,
             "schema_sha256": row.schema_sha256,
             "extracted_text_sha256": integrity.get("extracted_text_sha256"),
-            "chunk_hashes": integrity.get("chunk_hashes", []),
+            "chunk_hashes": (integrity.get("chunk_hashes") or [])[:256],
             "tier": row.tier,
             "confidence": row.confidence,
             "status": row.status,
@@ -256,37 +277,33 @@ class RegistryService:
                 up_loc = item.get("locator")
                 if not up_loc:
                     continue
-                up_row = session.execute(
-                    select(AttestationRecordModel).where(
-                        AttestationRecordModel.locator == up_loc,
-                        AttestationRecordModel.is_current.is_(True),
-                    )
-                ).scalar_one_or_none()
+                up_row = self._get_single_current_row(session, up_loc)
                 if up_row:
                     item["record_id"] = up_row.record_id
                     if TIER_ORDER[up_row.tier] > TIER_ORDER[effective_tier]:
                         effective_tier = up_row.tier
 
             # Check if an active record already exists for this locator
-            prev_row = session.execute(
-                select(AttestationRecordModel).where(
-                    AttestationRecordModel.locator == locator,
-                    AttestationRecordModel.is_current.is_(True),
-                )
-            ).scalar_one_or_none()
+            prev_row = self._get_single_current_row(session, locator)
 
             # If low confidence, hold in PENDING_REVIEW without issuing an active record
             if low_confidence or confidence < 0.70:
                 if prev_row and prev_row.status not in ("revoked", "expired"):
                     # Invalidate previous record if content fingerprint changed into a low-confidence state
                     prev_row.is_current = False
-                existing_rev = session.execute(
-                    select(ReviewQueueModel).where(
-                        ReviewQueueModel.locator == locator,
-                        ReviewQueueModel.reason == "low_confidence",
-                        ReviewQueueModel.status == "PENDING_REVIEW",
+                existing_rev = (
+                    session.execute(
+                        select(ReviewQueueModel)
+                        .where(
+                            ReviewQueueModel.locator == locator,
+                            ReviewQueueModel.reason == "low_confidence",
+                            ReviewQueueModel.status == "PENDING_REVIEW",
+                        )
+                        .order_by(ReviewQueueModel.created_at.desc())
                     )
-                ).scalar_one_or_none()
+                    .scalars()
+                    .first()
+                )
                 meta_payload = json.dumps(
                     {
                         "content_sha256": content_sha256,
@@ -436,12 +453,8 @@ class RegistryService:
         """Look up the current record for a canonical object locator, auto-transitioning expired records."""
         self.expire_due_records()
         with self.SessionLocal() as session:
-            row = session.execute(
-                select(AttestationRecordModel).where(
-                    AttestationRecordModel.locator == locator,
-                    AttestationRecordModel.is_current.is_(True),
-                )
-            ).scalar_one_or_none()
+            row = self._get_single_current_row(session, locator)
+            session.commit()
             if not row:
                 return None
             if not include_expired_or_revoked and row.status in ("expired", "revoked"):
@@ -455,6 +468,24 @@ class RegistryService:
             stmt = select(AttestationRecordModel)
             if current_only:
                 stmt = stmt.where(AttestationRecordModel.is_current.is_(True))
+                rows = (
+                    session.execute(stmt.order_by(AttestationRecordModel.locator, AttestationRecordModel.issued_at.desc()))
+                    .scalars()
+                    .all()
+                )
+                deduped: list[AttestationRecordModel] = []
+                seen_locators: set[str] = set()
+                dirty = False
+                for r in rows:
+                    if r.locator in seen_locators:
+                        r.is_current = False
+                        dirty = True
+                    else:
+                        seen_locators.add(r.locator)
+                        deduped.append(r)
+                if dirty:
+                    session.commit()
+                return [self._row_to_dict(r) for r in deduped]
             rows = session.execute(stmt.order_by(AttestationRecordModel.locator)).scalars().all()
             return [self._row_to_dict(r) for r in rows]
 
@@ -522,12 +553,7 @@ class RegistryService:
         """
         now_dt = now or datetime.now(timezone.utc)
         with self.SessionLocal() as session:
-            prev_row = session.execute(
-                select(AttestationRecordModel).where(
-                    AttestationRecordModel.locator == locator,
-                    AttestationRecordModel.is_current.is_(True),
-                )
-            ).scalar_one_or_none()
+            prev_row = self._get_single_current_row(session, locator)
             if not prev_row:
                 raise RegistryLifecycleError(f"No current record found for locator '{locator}'.")
             if prev_row.status == "revoked":
@@ -593,12 +619,7 @@ class RegistryService:
 
         now_dt = now or datetime.now(timezone.utc)
         with self.SessionLocal() as session:
-            prev_row = session.execute(
-                select(AttestationRecordModel).where(
-                    AttestationRecordModel.locator == locator,
-                    AttestationRecordModel.is_current.is_(True),
-                )
-            ).scalar_one_or_none()
+            prev_row = self._get_single_current_row(session, locator)
             if not prev_row:
                 raise RegistryLifecycleError(f"No current record found for locator '{locator}'.")
             if TIER_ORDER[new_tier] <= TIER_ORDER[prev_row.tier]:
@@ -666,12 +687,7 @@ class RegistryService:
         now_str = format_iso8601(now_dt)
 
         with self.SessionLocal() as session:
-            prev_row = session.execute(
-                select(AttestationRecordModel).where(
-                    AttestationRecordModel.locator == locator,
-                    AttestationRecordModel.is_current.is_(True),
-                )
-            ).scalar_one_or_none()
+            prev_row = self._get_single_current_row(session, locator)
             if not prev_row:
                 raise RegistryLifecycleError(f"No current record found for locator '{locator}'.")
             if TIER_ORDER[new_tier] >= TIER_ORDER[prev_row.tier]:
@@ -769,12 +785,7 @@ class RegistryService:
         now_str = format_iso8601(now_dt)
 
         with self.SessionLocal() as session:
-            row = session.execute(
-                select(AttestationRecordModel).where(
-                    AttestationRecordModel.locator == locator,
-                    AttestationRecordModel.is_current.is_(True),
-                )
-            ).scalar_one_or_none()
+            row = self._get_single_current_row(session, locator)
             if not row:
                 raise RegistryLifecycleError(f"No current record found for locator '{locator}'.")
 
