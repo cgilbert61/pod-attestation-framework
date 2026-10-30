@@ -31,7 +31,7 @@ class SnapshotPublisher:
         self,
         registry: RegistryService,
         publisher_id: str = "pod-snapshot-publisher-v0.1",
-        ttl_seconds: int = 300,
+        ttl_seconds: int = 3600,
         snapshot_output_path: str | Path | None = None,
     ) -> None:
         self.registry = registry

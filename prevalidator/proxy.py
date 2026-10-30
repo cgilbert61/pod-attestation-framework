@@ -1621,7 +1621,12 @@ def create_prevalidator_app(
         store = InMemorySnapshotStore(keyring)
         snap_path = Path(snapshot_file or os.environ.get("POD_SNAPSHOT_FILE", "./pod_snapshot.dsse.json"))
         if snap_path.exists():
-            store.load_from_file(snap_path)
+            try:
+                store.load_from_file(snap_path)
+            except Exception:
+                # If a stale snapshot from an earlier boot exists on disk, start cleanly (fail-closed)
+                # until SnapshotPublisher/Engine pushes a fresh signed snapshot.
+                pass
         mode = os.environ.get("POD_PREVALIDATOR_MODE", "enforce")
         enforcer = PrevalidatorEnforcer(snapshot_store=store, mode=mode)
 
