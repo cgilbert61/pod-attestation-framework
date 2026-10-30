@@ -166,15 +166,15 @@ def discover_selectable_drives_and_directories() -> list[dict[str, str]]:
                 _add(f"C:\\Users\\chuck\\{std_sub}", f"📁 C:\\Users\\chuck\\{std_sub}")
 
     # 4. Discover Project Directories in D:\attestation and D:\
-    d_ws = Path("/host_workspace") if Path("/host_workspace").is_dir() else Path("D:/attestation")
-    if d_ws.is_dir():
-        _add("D:\\attestation", "📁 D:\\attestation (POD Framework Workspace)")
-        try:
-            for child in sorted(d_ws.iterdir(), key=lambda p: p.name.lower()):
-                if child.is_dir() and not child.name.startswith(".") and child.name.lower() not in SKIP_DIR_NAMES:
-                    _add(f"D:\\attestation\\{child.name}", f"📁 D:\\attestation\\{child.name}")
-        except OSError:
-            pass
+    for d_ws in (Path("/host_workspace"), Path("/app"), Path("D:/attestation")):
+        if d_ws.is_dir():
+            _add("D:\\attestation", "📁 D:\\attestation (POD Framework Workspace)")
+            try:
+                for child in sorted(d_ws.iterdir(), key=lambda p: p.name.lower()):
+                    if child.is_dir() and not child.name.startswith(".") and child.name.lower() not in SKIP_DIR_NAMES:
+                        _add(f"D:\\attestation\\{child.name}", f"📁 D:\\attestation\\{child.name}")
+            except OSError:
+                pass
 
     d_root = Path("/host_d") if Path("/host_d").is_dir() else Path("D:/")
     if d_root.is_dir():
@@ -250,12 +250,13 @@ def resolve_pc_directory_path(raw_path: str) -> tuple[Path, str]:
     if direct.exists():
         return direct, locator_base
 
-    # 2. Translate D:/attestation/... -> /host_workspace/...
+    # 2. Translate D:/attestation/... -> /host_workspace/... or /app/...
     if lower_norm.startswith("d:/attestation"):
         sub = norm_slashes[len("d:/attestation") :].lstrip("/")
-        candidate = Path("/host_workspace") / sub if sub else Path("/host_workspace")
-        if candidate.exists():
-            return candidate, locator_base
+        for base_dir in (Path("/host_workspace"), Path("/app")):
+            candidate = base_dir / sub if sub else base_dir
+            if candidate.exists() and (sub or any(p.name != "pc_demo_folder" for p in candidate.iterdir())):
+                return candidate, locator_base
 
     # 3. Translate any D:/... -> /host_d/...
     if lower_norm.startswith("d:"):
