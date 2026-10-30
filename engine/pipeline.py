@@ -154,7 +154,12 @@ class AttestationEngine:
         results: list[dict[str, Any]] = []
         for tbl in tables:
             existing = self.registry.lookup_by_locator(tbl.locator, include_expired_or_revoked=False)
-            if existing and existing["content_sha256"] == tbl.content_sha256:
+            if (
+                existing
+                and existing["content_sha256"] == tbl.content_sha256
+                and existing.get("extracted_text_sha256") == tbl.extracted_text_sha256
+                and existing.get("chunk_hashes")
+            ):
                 results.append({"action": "unchanged", "record": existing, "review": None})
                 continue
 
@@ -183,6 +188,8 @@ class AttestationEngine:
                 row_count=tbl.row_count,
                 fingerprint_method="table_schema_and_canonical_rows_sha256",
                 classifier_engine=verdict.classifier_engine,
+                extracted_text_sha256=tbl.extracted_text_sha256,
+                chunk_hashes=tbl.chunk_hashes,
             )
             results.append(res)
         return results

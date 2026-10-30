@@ -400,3 +400,74 @@ def test_adversarial_5_key_isolation_verification_only(tmp_path: Path):
         verifier_keyring.verify_dsse(env)
     leaked_file.unlink()
     registry.close()
+
+
+def test_adversarial_6_concurrency_ratchet_and_db_chunk_hashes(tmp_path: Path):
+    """Test 6: Verify verify_inline_text=False parameter, high-watermark tier ratchet on content change, and DB table chunk_hashes."""
+    from sqlalchemy import create_engine, text
+    from engine.pipeline import AttestationEngine
+
+    db_url = f"sqlite:///{(tmp_path / 'adv6.db').as_posix()}"
+    registry = RegistryService(db_url=db_url, key_dir=tmp_path / "keys")
+
+    # 1. High-watermark tier ratchet: Confidential asset modified with benign content must NOT silently downgrade to Public
+    r1 = registry.issue_or_queue_finding(
+        locator="file:///docs/ratchet.txt",
+        content_sha256="1" * 64,
+        tier="Confidential",
+        owner="sec@example.org",
+        confidence=0.95,
+    )
+    assert r1["record"]["tier"] == "Confidential"
+
+    r2 = registry.issue_or_queue_finding(
+        locator="file:///docs/ratchet.txt",
+        content_sha256="2" * 64,
+        tier="Public",
+        owner="sec@example.org",
+        confidence=0.99,
+    )
+    assert r2["record"]["tier"] == "Confidential"
+
+    # 2. Database crawl populates chunk_hashes so inline <pod:object> row snippets verify under strict_inline_hash=True
+    sample_db_url = f"sqlite:///{(tmp_path / 'estate_sample.db').as_posix()}"
+    eng = create_engine(sample_db_url)
+    with eng.begin() as conn:
+        conn.execute(text("CREATE TABLE public_catalog (sku TEXT, title TEXT)"))
+        conn.execute(text("INSERT INTO public_catalog (sku, title) VALUES ('SKU-100', 'Quantum Router')"))
+    eng.dispose()
+
+    pipeline = AttestationEngine(registry=registry)
+    db_results = pipeline.crawl_database(
+        db_url=sample_db_url,
+        locator_override_base="postgres://estate-db:5432/estate",
+    )
+    assert len(db_results) == 1
+    tbl_rec = db_results[0]["record"]
+    assert tbl_rec.get("chunk_hashes")
+
+    pub = SnapshotPublisher(registry=registry, snapshot_output_path=tmp_path / "snap.dsse.json")
+    env = pub.publish_snapshot()
+    store = InMemorySnapshotStore(registry.keyring)
+    store.load_from_envelope(env)
+    enforcer = PrevalidatorEnforcer(snapshot_store=store, mode="enforce", strict_inline_hash=True)
+
+    # Evaluating a row snippet from postgres://estate-db:5432/estate/public/public_catalog succeeds under strict_inline_hash=True
+    row_prompt = '<pod:object locator="postgres://estate-db:5432/estate/public/public_catalog">SKU-100 | Quantum Router</pod:object>'
+    outcome_ok = enforcer.evaluate_request(
+        payload={"model": "gpt-4o", "messages": [{"role": "user", "content": row_prompt}]},
+        headers={"X-POD-Caller-Key": "pod-key-public"},
+    )
+    assert outcome_ok.allowed_to_forward is True
+
+    # Calling evaluate_request(..., verify_inline_text=False) leaves enforcer.strict_inline_hash == True untouched
+    sim_prompt = f'<pod:object locator="postgres://estate-db:5432/estate/public/public_catalog" sha256="{tbl_rec["content_sha256"]}">File content check</pod:object>'
+    outcome_sim = enforcer.evaluate_request(
+        payload={"model": "gpt-4o", "messages": [{"role": "user", "content": sim_prompt}]},
+        headers={"X-POD-Caller-Key": "pod-key-public"},
+        verify_inline_text=False,
+    )
+    assert outcome_sim.allowed_to_forward is True
+    assert enforcer.strict_inline_hash is True
+    registry.close()
+

@@ -376,6 +376,7 @@ class PrevalidatorEnforcer:
         target_egress: str,
         now_dt: datetime,
         inner_text: str | None = None,
+        verify_inline_text: bool | None = None,
     ) -> tuple[str, list[str]]:
         """Return `(action, reason_codes)` where action is `'allow' | 'strip' | 'deny'`."""
         entry = entries.get(locator)
@@ -391,7 +392,8 @@ class PrevalidatorEnforcer:
             return "deny", ["EXPIRED"]
 
         # Live cryptographic verification of inline <pod:object> content
-        if inner_text is not None and self.strict_inline_hash:
+        effective_strict_inline = self.strict_inline_hash if verify_inline_text is None else verify_inline_text
+        if inner_text is not None and effective_strict_inline:
             if not self._verify_inner_text_cryptographically(inner_text, inline_sha256, entry):
                 return "deny", [REASON_HASH_MISMATCH, "HASH_DRIFT"]
         elif inline_sha256 and inline_sha256.lower() != entry["content_sha256"].lower():
@@ -430,6 +432,7 @@ class PrevalidatorEnforcer:
         payload: dict[str, Any],
         headers: dict[str, str] | None = None,
         now: datetime | None = None,
+        verify_inline_text: bool | None = None,
     ) -> EnforcementOutcome:
         """Evaluate an OpenAI `/v1/chat/completions` or Anthropic `/v1/messages` request payload."""
         t0_ns = time.perf_counter_ns()
@@ -437,6 +440,7 @@ class PrevalidatorEnforcer:
         now_str = format_iso8601(now_dt)
         hdrs = headers or {}
         norm_hdrs = {k.lower(): v for k, v in hdrs.items()}
+        effective_strict_inline = self.strict_inline_hash if verify_inline_text is None else verify_inline_text
 
         caller_clearance = self.resolve_caller_clearance(hdrs)
         target_egress = self.resolve_target_egress(payload.get("model"))
@@ -508,6 +512,7 @@ class PrevalidatorEnforcer:
                     target_egress=target_egress,
                     now_dt=now_dt,
                     inner_text=inner_content,
+                    verify_inline_text=effective_strict_inline,
                 )
                 if action == "deny":
                     reason_codes.extend(r_codes)
@@ -582,7 +587,7 @@ class PrevalidatorEnforcer:
             for raw_loc in [x.strip() for x in header_loc_str.split(",") if x.strip()]:
                 if raw_loc not in locators_seen:
                     locators_seen.append(raw_loc)
-                if self.strict_inline_hash and not self.allow_header_only_objects and raw_loc not in inline_verified_locators:
+                if effective_strict_inline and not self.allow_header_only_objects and raw_loc not in inline_verified_locators:
                     reason_codes.append(REASON_UNVERIFIED_INLINE_CONTENT)
                     continue
                 action, r_codes = self._evaluate_single_locator(
@@ -593,6 +598,7 @@ class PrevalidatorEnforcer:
                     target_egress=target_egress,
                     now_dt=now_dt,
                     inner_text=None,
+                    verify_inline_text=effective_strict_inline,
                 )
                 if action == "deny":
                     reason_codes.extend(r_codes)

@@ -1993,17 +1993,15 @@ def create_prevalidator_app(
                     }
                 ],
             }
-            prev_strict = enforcer.strict_inline_hash
-            enforcer.strict_inline_hash = False
             t_eval_ns = time.perf_counter_ns()
             try:
                 outcome = enforcer.evaluate_request(
                     payload=sim_payload,
                     headers={"X-POD-Caller-Key": caller_key},
+                    verify_inline_text=False,
                 )
             finally:
                 in_memory_enforcer_ns += max(100, time.perf_counter_ns() - t_eval_ns)
-                enforcer.strict_inline_hash = prev_strict
             reasons = outcome.audit_entry.reason_codes
             is_clean_pass = len(reasons) == 0 and outcome.allowed_to_forward
             is_observe_mode = enforcer.mode == "observe"

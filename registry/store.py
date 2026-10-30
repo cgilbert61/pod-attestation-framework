@@ -355,6 +355,12 @@ class RegistryService:
 
             # If previous record had a HIGHER tier than the newly classified tier (even on content change),
             # never silently downgrade without dual approval — retain the higher tier or queue for dual approval.
+            if (
+                prev_row
+                and prev_row.status not in ("revoked", "expired")
+                and TIER_ORDER[prev_row.tier] > TIER_ORDER[effective_tier]
+            ):
+                effective_tier = prev_row.tier
             previous_record_id = prev_row.record_id if prev_row else None
             if prev_row:
                 prev_row.is_current = False

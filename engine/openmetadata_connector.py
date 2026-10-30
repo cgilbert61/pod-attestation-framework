@@ -16,6 +16,8 @@ from urllib.parse import urlparse
 import httpx
 from sqlalchemy import create_engine, inspect, text
 
+from engine.extractor import compute_extracted_text_and_chunk_hashes
+
 
 @dataclass
 class TableDiscoveryFinding:
@@ -33,6 +35,8 @@ class TableDiscoveryFinding:
     openmetadata_findings: list[dict[str, Any]] = field(default_factory=list)
     owner_hint: str | None = None
     derived_from: list[dict[str, Any]] = field(default_factory=list)
+    extracted_text_sha256: str | None = None
+    chunk_hashes: list[str] = field(default_factory=list)
 
 
 # Mapping from OpenMetadata tag FQN patterns to POD sensitive category names
@@ -152,6 +156,7 @@ class OpenMetadataDatabaseScanner:
                 qualified_table = f'"{schema_name}"."{table_name}"' if schema_name != "main" else f'"{table_name}"'
 
                 row_hashes: list[str] = []
+                text_chunks: list[str] = []
                 column_samples: dict[str, list[str]] = {c: [] for c in col_names}
                 total_bytes = len(schema_json)
                 row_count = 0
@@ -162,13 +167,24 @@ class OpenMetadataDatabaseScanner:
                     rows = conn.execute(text(f"SELECT {quoted_cols} FROM {qualified_table}")).fetchall()
                     for idx, row in enumerate(rows):
                         row_dict = {col_names[i]: (str(row[i]) if row[i] is not None else None) for i in range(len(col_names))}
-                        row_bytes = json.dumps(row_dict, separators=(",", ":"), sort_keys=True).encode("utf-8")
+                        row_json_str = json.dumps(row_dict, separators=(",", ":"), sort_keys=True)
+                        row_bytes = row_json_str.encode("utf-8")
                         total_bytes += len(row_bytes)
                         row_hashes.append(hashlib.sha256(row_bytes).hexdigest())
                         if idx < self.sample_limit:
+                            row_str_vals = [str(row[i]) if row[i] is not None else "" for i in range(len(col_names))]
+                            row_kv_pipe = " | ".join(f"{col_names[i]}={row_str_vals[i]}" for i in range(len(col_names)))
+                            row_val_pipe = " | ".join(row_str_vals)
+                            row_csv = ",".join(row_str_vals)
+                            text_chunks.extend([row_json_str, row_kv_pipe, row_val_pipe, row_csv])
                             for i, c_name in enumerate(col_names):
                                 if row[i] is not None:
-                                    column_samples[c_name].append(str(row[i]))
+                                    val_str = str(row[i])
+                                    column_samples[c_name].append(val_str)
+                                    text_chunks.append(val_str)
+                                    text_chunks.append(f"{c_name}: {val_str}")
+
+                extracted_text_sha256, chunk_hashes = compute_extracted_text_and_chunk_hashes("\n".join(text_chunks))
 
                 # Deterministic table content fingerprint = SHA-256(schema_sha256 + sorted row hashes)
                 row_hashes.sort()
@@ -202,6 +218,8 @@ class OpenMetadataDatabaseScanner:
                         openmetadata_findings=om_findings,
                         owner_hint=om_meta.get("owner"),
                         derived_from=om_meta.get("derived_from", []),
+                        extracted_text_sha256=extracted_text_sha256,
+                        chunk_hashes=chunk_hashes,
                     )
                 )
 

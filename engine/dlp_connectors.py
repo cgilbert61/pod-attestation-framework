@@ -533,6 +533,19 @@ class PurviewMultiCloudConnector:
             if label_tier in TIER_ORDER and TIER_ORDER[label_tier] > TIER_ORDER[verdict.tier]:
                 verdict.tier = label_tier
 
+            from engine.extractor import compute_extracted_text_and_chunk_hashes
+
+            asset_chunks = [
+                asset.display_name,
+                asset.locator,
+                f"{asset.display_name} ({asset.cloud_source})",
+                f"Purview Sensitivity Label: {asset.purview_sensitivity_label or 'Unlabeled'}",
+            ]
+            for col_name, col_cls_list in asset.column_classifications.items():
+                asset_chunks.append(col_name)
+                asset_chunks.append(f"{col_name}: {', '.join(col_cls_list)}")
+            extracted_sha, chunk_hashes = compute_extracted_text_and_chunk_hashes("\n".join(asset_chunks))
+
             res = self.registry.issue_or_queue_finding(
                 locator=asset.locator,
                 content_sha256=asset.content_sha256,
@@ -558,6 +571,8 @@ class PurviewMultiCloudConnector:
                 row_count=asset.row_count,
                 fingerprint_method="raw_bytes_sha256" if asset.object_type != "table" else "table_schema_and_canonical_rows_sha256",
                 classifier_engine=verdict.classifier_engine,
+                extracted_text_sha256=extracted_sha,
+                chunk_hashes=chunk_hashes,
             )
 
             rec = res.get("record")
