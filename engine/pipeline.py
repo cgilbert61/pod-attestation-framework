@@ -116,6 +116,7 @@ class AttestationEngine:
         environment: str = "production",
         max_files: int = 120,
         include_code_dirs: bool = False,
+        force_rescan: bool = False,
     ) -> list[dict[str, Any]]:
         """Crawl a directory tree or entire drive, extract with Tika, classify with Presidio, and issue/update records."""
         root = Path(root_dir).resolve()
@@ -131,6 +132,7 @@ class AttestationEngine:
                     owner=owner,
                     locator_override=loc_override,
                     environment=environment,
+                    force_rescan=force_rescan,
                 )
                 results.append(res)
                 if max_files > 0 and len(results) >= max_files:

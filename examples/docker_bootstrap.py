@@ -99,6 +99,7 @@ def main() -> int:
         owner="fileshare-steward@example.org",
         locator_base="file://estate/fileshare",
         environment="production",
+        force_rescan=True,
     )
     db_results = engine.crawl_database(
         db_url=estate["db_url"],

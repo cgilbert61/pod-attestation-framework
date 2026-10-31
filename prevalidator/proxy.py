@@ -1451,17 +1451,17 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
         document.getElementById('endpointSelect').value = '/v1/chat/completions';
         document.getElementById('callerKey').value = 'pod-key-public';
         document.getElementById('modelSelect').value = 'gpt-4o';
-        document.getElementById('promptInput').value = 'Summarize this architecture doc:\\n<pod:object locator="file://estate/fileshare/product_overview_public.md">Open Source AI Architecture Overview</pod:object>';
+        document.getElementById('promptInput').value = 'Summarize this architecture doc:\n<pod:object locator="file://estate/fileshare/product_overview_public.md">Open Source AI Architecture Overview</pod:object>';
       } else if (name === 'strip') {
         document.getElementById('endpointSelect').value = '/v1/messages';
         document.getElementById('callerKey').value = 'pod-key-confidential';
         document.getElementById('modelSelect').value = 'local-model';
-        document.getElementById('promptInput').value = 'Provide general HR policy guidance.\\n<pod:object locator="file://estate/fileshare/dept_compensation_confidential.xlsx">diana.prince@example.org | salary: $145,000</pod:object>';
+        document.getElementById('promptInput').value = 'Provide general HR policy guidance.\n<pod:object locator="file://estate/fileshare/dept_compensation_confidential.xlsx">diana.prince@example.org | salary: $145,000</pod:object>';
       } else if (name === 'restricted') {
         document.getElementById('endpointSelect').value = '/v1/chat/completions';
         document.getElementById('callerKey').value = 'pod-key-restricted';
         document.getElementById('modelSelect').value = 'gpt-4o';
-        document.getElementById('promptInput').value = 'Analyze intake record:\\n<pod:object locator="file://estate/fileshare/clinical_intake_restricted.txt">Patient SSN: 412-58-9021, MRN-8839201</pod:object>';
+        document.getElementById('promptInput').value = 'Analyze intake record:\n<pod:object locator="file://estate/fileshare/clinical_intake_restricted.txt">Patient SSN: 412-58-9021, MRN-8839201</pod:object>';
       } else if (name === 'unattested') {
         document.getElementById('endpointSelect').value = '/v1/chat/completions';
         document.getElementById('callerKey').value = 'pod-key-public';
@@ -1626,9 +1626,20 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
         body: JSON.stringify({ model, messages: [{ role: 'user', content }] })
       });
       const data = await resp.json();
-      document.getElementById('statusSpan').textContent = `HTTP ${resp.status}`;
-      document.getElementById('responseBox').textContent = JSON.stringify(data, null, 2);
       await refreshState();
+      if (resp.status === 403) {
+        try {
+          const auditResp = await (await fetch('/v1/admin/audit-log', { headers: { 'X-POD-Admin-Key': ADMIN_KEY } })).json();
+          const lastAudit = (auditResp.entries || []).slice(-1)[0];
+          const reasons = lastAudit && lastAudit.reason_codes ? lastAudit.reason_codes.join(', ') : 'POLICY_DENIED';
+          document.getElementById('statusSpan').innerHTML = `<span style="color:#f87171;">HTTP 403 — Blocked (${reasons})</span>`;
+        } catch (e) {
+          document.getElementById('statusSpan').textContent = `HTTP ${resp.status}`;
+        }
+      } else {
+        document.getElementById('statusSpan').innerHTML = `<span style="color:#34d399;">HTTP ${resp.status} OK</span>`;
+      }
+      document.getElementById('responseBox').textContent = JSON.stringify(data, null, 2);
     }
 
     const LLM_PRESETS = {
@@ -2142,6 +2153,19 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
         });
         if (resp.ok) {
           const apiData = await resp.json();
+          if (apiData.sample_verified_chunk) {
+            cached.sample_verified_chunk = apiData.sample_verified_chunk;
+          }
+          if (apiData.snapshot_entry) {
+            Object.assign(cached, apiData.snapshot_entry);
+          }
+          if (apiData.record) {
+            cached.content_sha256 = cached.content_sha256 || apiData.record.content_sha256;
+            cached.minimum_clearance = cached.minimum_clearance || apiData.record.minimum_clearance;
+            cached.egress_class = cached.egress_class || apiData.record.egress_class;
+            cached.tier = cached.tier || apiData.record.tier;
+          }
+          fileInspectorCache[locator] = cached;
           renderInspectorFields(locator, cached, apiData);
         }
       } catch (e) {}
@@ -2151,7 +2175,26 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       if (!currentlyInspectedLocator) return;
       const cached = fileInspectorCache[currentlyInspectedLocator] || {};
       const shaAttr = cached.content_sha256 ? ` sha256="${cached.content_sha256}"` : '';
-      document.getElementById('promptInput').value = `Summarize and analyze this object:\n<pod:object locator="${currentlyInspectedLocator}"${shaAttr}>Inspecting ${cached.file_name || currentlyInspectedLocator}</pod:object>`;
+      const verifiedInner = cached.sample_verified_chunk || `Inspecting ${cached.file_name || currentlyInspectedLocator}`;
+      const clearanceToKey = {
+        'Public': 'pod-key-public',
+        'Internal': 'pod-key-internal',
+        'Confidential': 'pod-key-confidential',
+        'Restricted': 'pod-key-restricted'
+      };
+      const reqClearance = cached.minimum_clearance || cached.tier || 'Public';
+      if (clearanceToKey[reqClearance]) {
+        document.getElementById('callerKey').value = clearanceToKey[reqClearance];
+      }
+      const reqEgress = cached.egress_class || 'public_api';
+      if (reqEgress === 'local_only') {
+        document.getElementById('modelSelect').value = 'local-model';
+      } else if (reqEgress === 'private_cloud') {
+        document.getElementById('modelSelect').value = 'vpc-model';
+      } else {
+        document.getElementById('modelSelect').value = 'gpt-4o';
+      }
+      document.getElementById('promptInput').value = `Summarize and analyze this object:\n<pod:object locator="${currentlyInspectedLocator}"${shaAttr}>${verifiedInner}</pod:object>`;
       closeFileInspector();
       document.getElementById('promptInput').scrollIntoView({ behavior: 'smooth', block: 'center' });
     }

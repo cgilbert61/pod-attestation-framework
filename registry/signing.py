@@ -94,14 +94,16 @@ def compute_extracted_text_and_chunk_hashes(text: str) -> tuple[str, list[str]]:
                 heading_clean = ln.lstrip("#").strip()
                 if heading_clean:
                     _add_chunk(heading_clean)
-            # For pipe-delimited spreadsheet/CSV rows, include contiguous cell slices
-            if " | " in ln:
-                cells = [c.strip() for c in ln.split(" | ") if c.strip()]
-                n_cells = len(cells)
-                if 1 < n_cells <= 12:
-                    for i in range(n_cells):
-                        for j in range(i + 1, n_cells + 1):
-                            _add_chunk(" | ".join(cells[i:j]))
+            # For pipe-delimited or tab-delimited (Apache Tika Server) spreadsheet/CSV rows, include contiguous cell slices
+            for delim in (" | ", "\t"):
+                if delim in ln:
+                    cells = [c.strip() for c in ln.split(delim) if c.strip()]
+                    n_cells = len(cells)
+                    if 1 < n_cells <= 12:
+                        for i in range(n_cells):
+                            for j in range(i + 1, n_cells + 1):
+                                _add_chunk(" | ".join(cells[i:j]))
+                                _add_chunk("\t".join(cells[i:j]))
             if len(ln) > 500:
                 for start in range(0, min(len(ln), 5000), 250):
                     window = ln[start : start + 500]

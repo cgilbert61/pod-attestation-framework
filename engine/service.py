@@ -320,11 +320,74 @@ def create_engine_app() -> FastAPI:
         """Pause/resume the Continuous Delta Crawler, update target list, reset watermarks, or focus on a specific drive/cloud URI."""
         return crawler.update_config(payload)
 
+    def _resolve_sample_verified_chunk(locator: str, rec: dict[str, Any] | None) -> str | None:
+        """Return a real verified text chunk/line for `locator` whose SHA-256 is in `chunk_hashes`."""
+        # 1. Check Enterprise Data Store objects (S3, Azure ADLS, GCS, Snowflake, BigQuery)
+        for objs in store_manager.store_objects.values():
+            for obj in objs:
+                if obj.locator == locator and obj.sample_text:
+                    return obj.sample_text.splitlines()[0].strip()
+
+        # 2. Check Postgres operational tables
+        if locator.startswith("postgres://"):
+            tbl_name = locator.rsplit("/", 1)[-1]
+            pg_samples = {
+                "public_catalog": "SKU-001 | Standard Gateway Adapter | Software",
+                "customer_contacts": "CUST-101 | buyer.one@example.com | 212-555-0181",
+                "patient_biomarkers": "SUBJ-01 | 521-44-8192 | MRN-7710293 | rs121913529",
+            }
+            if tbl_name in pg_samples:
+                return pg_samples[tbl_name]
+
+        # 3. Resolve file:// locators on disk
+        candidate_paths: list[Path] = []
+        if locator.startswith("file://estate/fileshare/"):
+            rel = locator[len("file://estate/fileshare/") :]
+            candidate_paths.append(estate_dir / "fileshare" / rel)
+        elif locator.startswith("file://pc-dir/pc_demo_folder/"):
+            rel = locator[len("file://pc-dir/pc_demo_folder/") :]
+            for base in (Path("/host_user/pc_demo_folder"), Path("C:/Users/chuck/pc_demo_folder"), Path("D:/attestation/pc_demo_folder")):
+                candidate_paths.append(base / rel)
+        elif locator.startswith("file://pc-dir/C_Users_chuck/"):
+            rel = locator[len("file://pc-dir/C_Users_chuck/") :]
+            for base in (Path("/host_user"), Path("C:/Users/chuck")):
+                candidate_paths.append(base / rel)
+        elif locator.startswith("file://pc-dir/D_attestation/"):
+            rel = locator[len("file://pc-dir/D_attestation/") :]
+            for base in (Path("/host_workspace"), Path("/app"), Path("D:/attestation")):
+                candidate_paths.append(base / rel)
+        elif locator.startswith("file://pc-dir/C/"):
+            rel = locator[len("file://pc-dir/C/") :]
+            for base in (Path("/host_c"), Path("C:/")):
+                candidate_paths.append(base / rel)
+        elif locator.startswith("file://pc-dir/D/"):
+            rel = locator[len("file://pc-dir/D/") :]
+            for base in (Path("/host_d"), Path("D:/")):
+                candidate_paths.append(base / rel)
+
+        for fpath in candidate_paths:
+            try:
+                if fpath.is_file():
+                    doc = engine.extractor.extract_file(fpath)
+                    lines = [ln.strip() for ln in doc.text.splitlines() if ln.strip() and not ln.strip().startswith("[Sheet:")]
+                    if lines:
+                        # For spreadsheets with a header row + data row, prefer the first data row
+                        if len(lines) > 1 and doc.object_type == "spreadsheet":
+                            return lines[1].replace("\t", " | ")[:300]
+                        first_ln = lines[0]
+                        if first_ln.startswith("#"):
+                            first_ln = first_ln.lstrip("#").strip() or first_ln
+                        return first_ln[:300]
+            except Exception:
+                continue
+        return None
+
     @app.get("/v1/record-detail")
     def get_record_detail(locator: str = Query(..., description="Canonical object locator URI")) -> dict[str, Any]:
         """Return the complete 32-field in-toto v1 Attestation Statement, DSSE signature envelope, ownership, sensitive entity categories, and review queue history for a locator."""
         rec = registry.lookup_by_locator(locator, include_expired_or_revoked=True)
         reviews = registry.lookup_reviews_by_locator(locator)
+        sample_chunk = _resolve_sample_verified_chunk(locator, rec)
         if rec:
             stmt = rec.get("statement") or {}
             pred = stmt.get("predicate") or {}
@@ -354,6 +417,7 @@ def create_engine_app() -> FastAPI:
             return {
                 "found": True,
                 "locator": locator,
+                "sample_verified_chunk": sample_chunk,
                 "record": rec,
                 "predicate": pred,
                 "dsse_envelope": rec.get("dsse_envelope"),

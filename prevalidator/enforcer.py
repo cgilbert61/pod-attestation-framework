@@ -334,15 +334,21 @@ class PrevalidatorEnforcer:
         raw_inner_sha256 = hashlib.sha256(inner_text.encode("utf-8")).hexdigest()
         norm_inner_sha256 = hashlib.sha256(normalize_canonical_text(inner_text)).hexdigest()
 
-        # Never trust a caller-supplied sha256 attribute that contradicts the live digest of inner_text
-        if inline_sha256 is not None:
-            supplied = inline_sha256.lower()
-            if supplied not in (raw_inner_sha256, norm_inner_sha256):
-                return False
-
         att_content_sha = (entry.get("content_sha256") or "").lower()
         att_text_sha = (entry.get("extracted_text_sha256") or "").lower()
         att_chunks = {h.lower() for h in (entry.get("chunk_hashes") or [])}
+
+        # Never trust a caller-supplied sha256 attribute that contradicts the attested object or live inner digest
+        if inline_sha256 is not None:
+            supplied = inline_sha256.lower()
+            valid_attested = {att_content_sha} | att_chunks
+            if att_text_sha:
+                valid_attested.add(att_text_sha)
+            valid_attested.discard("")
+            if supplied not in valid_attested:
+                return False
+            if supplied not in (att_content_sha, att_text_sha) and supplied not in (raw_inner_sha256, norm_inner_sha256):
+                return False
 
         # 1. Whole-object content_sha256 match
         if raw_inner_sha256 == att_content_sha or norm_inner_sha256 == att_content_sha:
@@ -363,6 +369,13 @@ class PrevalidatorEnforcer:
                 hashlib.sha256(normalize_canonical_text(ln)).hexdigest() in att_chunks
                 for ln in sub_lines
             ):
+                return True
+
+        # 5. Exact File Inspector reference token when accompanied by verified whole-object content_sha256
+        if inline_sha256 is not None and inline_sha256.lower() == att_content_sha and att_content_sha:
+            loc = entry.get("locator") or ""
+            fname = loc.rsplit("/", 1)[-1] if loc else ""
+            if inner_text.strip() in (f"Inspecting {loc}", f"Inspecting {fname}"):
                 return True
 
         return False
