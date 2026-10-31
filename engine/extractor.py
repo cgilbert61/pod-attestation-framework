@@ -169,9 +169,20 @@ class TikaDocumentExtractor:
             with zipfile.ZipFile(path, "r") as zf:
                 if "word/document.xml" in zf.namelist():
                     xml_bytes = zf.read("word/document.xml")
-                    root = ET.fromstring(xml_bytes)
-                    texts = [elem.text for elem in root.iter() if elem.text]
-                    return " ".join(texts), meta, None
+                    try:
+                        root = ET.fromstring(xml_bytes)
+                    except ET.ParseError:
+                        import re as _re
+
+                        xml_str = xml_bytes.decode("utf-8", errors="replace")
+                        sanitized = _re.sub(
+                            r"&(?!(?:amp|lt|gt|apos|quot|#\d+|#x[0-9a-fA-F]+);)",
+                            "&amp;",
+                            xml_str,
+                        )
+                        root = ET.fromstring(sanitized.encode("utf-8"))
+                    texts = [elem.text.strip() for elem in root.iter() if elem.text and elem.text.strip()]
+                    return "\n".join(texts), meta, None
 
         if suffix == ".json":
             raw = path.read_text(encoding="utf-8", errors="replace")

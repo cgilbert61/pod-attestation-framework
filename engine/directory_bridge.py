@@ -409,7 +409,9 @@ def _create_minimal_docx(path: Path, paragraphs: list[str]) -> None:
         'Target="word/document.xml"/>'
         "</Relationships>"
     )
-    body_xml = "".join(f"<w:p><w:r><w:t>{p}</w:t></w:r></w:p>" for p in paragraphs)
+    from xml.sax.saxutils import escape as _xml_escape
+
+    body_xml = "".join(f"<w:p><w:r><w:t>{_xml_escape(p)}</w:t></w:r></w:p>" for p in paragraphs)
     document_xml = (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
@@ -475,18 +477,17 @@ def ensure_sample_pc_demo_folder(target_dir: str | Path) -> Path:
     )
 
     purview_docx_path = root / "07_purview_labeled_board_strategy.docx"
-    if not purview_docx_path.exists():
-        from engine.dlp_connectors import create_purview_labeled_docx
+    from engine.dlp_connectors import create_purview_labeled_docx
 
-        create_purview_labeled_docx(
-            purview_docx_path,
-            paragraphs=[
-                "FY27 Corporate Strategy & Board Briefing",
-                "This document contains no regex PII patterns, but carries an embedded Microsoft Purview MSIP Sensitivity Label (Confidential) in docProps/custom.xml.",
-                "G1 Docket Stage 1 (Labels-First Fast Lane) reads the Purview sensitivity label directly off the file.",
-            ],
-            purview_label_name="Confidential",
-        )
+    create_purview_labeled_docx(
+        purview_docx_path,
+        paragraphs=[
+            "FY27 Corporate Strategy & Board Briefing",
+            "This document contains no regex PII patterns, but carries an embedded Microsoft Purview MSIP Sensitivity Label (Confidential) in docProps/custom.xml.",
+            "G1 Docket Stage 1 (Labels-First Fast Lane) reads the Purview sensitivity label directly off the file.",
+        ],
+        purview_label_name="Confidential",
+    )
 
     return root
 

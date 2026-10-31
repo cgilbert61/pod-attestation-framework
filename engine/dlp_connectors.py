@@ -200,7 +200,9 @@ def create_purview_labeled_docx(
         'Target="docProps/custom.xml"/>'
         "</Relationships>"
     )
-    body_xml = "".join(f"<w:p><w:r><w:t>{p}</w:t></w:r></w:p>" for p in paragraphs)
+    from xml.sax.saxutils import escape as _xml_escape
+
+    body_xml = "".join(f"<w:p><w:r><w:t>{_xml_escape(p)}</w:t></w:r></w:p>" for p in paragraphs)
     document_xml = (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
@@ -214,9 +216,9 @@ def create_purview_labeled_docx(
         f'<property fmtid="{{D5CDD505-2E9C-101B-9397-08002B2CF9AE}}" pid="2" name="MSIP_Label_{purview_label_guid}_Enabled">'
         "<vt:lpwstr>true</vt:lpwstr></property>"
         f'<property fmtid="{{D5CDD505-2E9C-101B-9397-08002B2CF9AE}}" pid="3" name="MSIP_Label_{purview_label_guid}_Name">'
-        f"<vt:lpwstr>{purview_label_name}</vt:lpwstr></property>"
+        f"<vt:lpwstr>{_xml_escape(purview_label_name)}</vt:lpwstr></property>"
         f'<property fmtid="{{D5CDD505-2E9C-101B-9397-08002B2CF9AE}}" pid="4" name="MSIP_Label_{purview_label_guid}_SiteId">'
-        f"<vt:lpwstr>{tenant_id}</vt:lpwstr></property>"
+        f"<vt:lpwstr>{_xml_escape(tenant_id)}</vt:lpwstr></property>"
         f'<property fmtid="{{D5CDD505-2E9C-101B-9397-08002B2CF9AE}}" pid="5" name="MSIP_Label_{purview_label_guid}_Method">'
         "<vt:lpwstr>Privileged</vt:lpwstr></property>"
         "</Properties>"
