@@ -622,6 +622,22 @@ def build_attestation_statement(
     cats = sensitive_categories or []
     redact_cats = redaction_categories if redaction_categories is not None else [c["category"] for c in cats]
 
+    default_stewards = {
+        "Restricted": "privacy-compliance-steward@contoso.com",
+        "Confidential": "dlp-security-steward@contoso.com",
+        "Internal": "engineering-data-steward@contoso.com",
+        "Public": "open-data-steward@contoso.com",
+    }
+    effective_steward = steward if steward is not None else default_stewards.get(tier, "data-governance-steward@contoso.com")
+    if org_unit is not None:
+        effective_org_unit = org_unit
+    elif object_type in ("database_table", "database_view", "warehouse_table"):
+        effective_org_unit = "Enterprise Data Platform & Warehouse"
+    elif locator.startswith(("s3://", "azblob://", "abfss://", "gs://")):
+        effective_org_unit = "Cloud Lakehouse & AI Corpus Operations"
+    else:
+        effective_org_unit = "Enterprise Data & AI Governance"
+
     predicate: dict[str, Any] = {
         "schema_version": "0.1.0",
         "identity": {
@@ -633,9 +649,9 @@ def build_attestation_statement(
         },
         "ownership": {
             "owner": owner,
-            "steward": steward,
-            "org_unit": org_unit,
-            "jurisdiction": jurisdiction,
+            "steward": effective_steward,
+            "org_unit": effective_org_unit,
+            "jurisdiction": jurisdiction or "GLOBAL",
         },
         "provenance": {
             "attested_by": attested_by,

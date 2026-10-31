@@ -117,7 +117,7 @@ def main() -> int:
         envelope = None
         for _ in range(15):
             try:
-                with httpx.Client(timeout=5.0) as client:
+                with httpx.Client(timeout=45.0) as client:
                     r_pub = client.post(f"{snapshot_publisher_url}/v1/publish", headers=ctrl_headers)
                     if r_pub.status_code == 200:
                         envelope = r_pub.json()

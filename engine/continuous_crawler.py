@@ -191,6 +191,7 @@ class ContinuousDeltaCrawler:
         detail: str,
         tier: str | None = None,
         sha256: str | None = None,
+        locator: str | None = None,
     ) -> None:
         now_str = datetime.now(timezone.utc).strftime("%H:%M:%S.%f")[:-3]
         self.current_file = display_path
@@ -198,8 +199,9 @@ class ContinuousDeltaCrawler:
         self.ticker_feed.appendleft(
             {
                 "timestamp": now_str,
-                "kind": kind,  # 'delta' | 'skip' | 'snapshot' | 'revoke'
+                "kind": kind,  # 'delta' | 'skip' | 'snapshot' | 'revoke' | 'stop'
                 "path": display_path,
+                "locator": locator or (display_path if "://" in display_path else None),
                 "detail": detail,
                 "tier": tier,
                 "sha256": (sha256[:12] + "…") if sha256 else None,
@@ -436,6 +438,7 @@ class ContinuousDeltaCrawler:
                     detail=f"mtime+size match ({size_bytes:,} B) • 0 bytes read",
                     tier=wm.tier,
                     sha256=wm.content_sha256,
+                    locator=locator,
                 )
                 if self.throttle_ms_per_file > 0:
                     await asyncio.sleep(self.throttle_ms_per_file / 1000.0)
@@ -478,6 +481,7 @@ class ContinuousDeltaCrawler:
                         detail=f"SHA-256 verified & watermarked ({size_bytes:,} B)",
                         tier=tier,
                         sha256=sha,
+                        locator=locator,
                     )
                 else:
                     self.deltas_attested += 1
@@ -488,6 +492,7 @@ class ContinuousDeltaCrawler:
                         detail=f"ATTESTED DELTA → {tier} ({size_bytes:,} B)",
                         tier=tier,
                         sha256=sha,
+                        locator=locator,
                     )
                     await asyncio.to_thread(self._maybe_micro_publish, False)
 

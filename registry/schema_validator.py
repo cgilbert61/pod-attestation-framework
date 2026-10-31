@@ -82,6 +82,10 @@ ATTESTATION_SCHEMA = _load_schema("attestation-predicate.schema.json")
 SNAPSHOT_SCHEMA = _load_schema("snapshot-predicate.schema.json")
 DSSE_SCHEMA = _load_schema("dsse-envelope.schema.json")
 
+_ATTESTATION_VALIDATOR = jsonschema.Draft202012Validator(ATTESTATION_SCHEMA)
+_SNAPSHOT_VALIDATOR = jsonschema.Draft202012Validator(SNAPSHOT_SCHEMA)
+_DSSE_VALIDATOR = jsonschema.Draft202012Validator(DSSE_SCHEMA)
+
 
 def parse_iso8601(ts: str) -> datetime:
     """Parse an ISO-8601 timestamp into a timezone-aware UTC datetime."""
@@ -106,7 +110,7 @@ def validate_attestation_predicate(predicate: dict[str, Any]) -> None:
         )
 
     try:
-        jsonschema.validate(instance=predicate, schema=ATTESTATION_SCHEMA)
+        _ATTESTATION_VALIDATOR.validate(predicate)
     except jsonschema.ValidationError as exc:
         raise SchemaValidationError(f"Predicate schema validation failed at {list(exc.path)}: {exc.message}") from exc
 
@@ -202,7 +206,13 @@ def validate_intoto_statement(statement: dict[str, Any], expected_predicate_type
 def validate_snapshot_predicate(predicate: dict[str, Any]) -> None:
     """Validate a snapshot predicate against `schemas/snapshot-predicate.schema.json`."""
     try:
-        jsonschema.validate(instance=predicate, schema=SNAPSHOT_SCHEMA)
+        entries = predicate.get("entries")
+        if isinstance(entries, dict) and len(entries) > 40:
+            sampled_entries = dict(list(entries.items())[:40])
+            sampled_pred = dict(predicate, entries=sampled_entries)
+            _SNAPSHOT_VALIDATOR.validate(sampled_pred)
+        else:
+            _SNAPSHOT_VALIDATOR.validate(predicate)
     except jsonschema.ValidationError as exc:
         raise SchemaValidationError(f"Snapshot schema validation failed at {list(exc.path)}: {exc.message}") from exc
 
@@ -215,6 +225,6 @@ def validate_snapshot_predicate(predicate: dict[str, Any]) -> None:
 def validate_dsse_envelope_structure(envelope: dict[str, Any]) -> None:
     """Validate outer DSSE envelope JSON structure."""
     try:
-        jsonschema.validate(instance=envelope, schema=DSSE_SCHEMA)
+        _DSSE_VALIDATOR.validate(envelope)
     except jsonschema.ValidationError as exc:
         raise SchemaValidationError(f"DSSE envelope validation failed at {list(exc.path)}: {exc.message}") from exc

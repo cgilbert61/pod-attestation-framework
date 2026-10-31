@@ -122,6 +122,19 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     .folder-browser { display: none; background: #090d16; border: 1px solid #3b82f6; border-radius: 8px; padding: 14px; margin-top: 12px; }
     .folder-item { display: inline-block; background: #1e293b; border: 1px solid #334155; border-radius: 6px; padding: 6px 12px; margin: 4px; cursor: pointer; font-size: 12.5px; color: #93c5fd; }
     .folder-item:hover { background: #334155; color: #ffffff; }
+    .file-link { color: #38bdf8; cursor: pointer; font-weight: 700; text-decoration: none; display: inline-flex; align-items: center; gap: 6px; padding: 3px 7px; border-radius: 5px; transition: background 0.15s, color 0.15s, border-color 0.15s; border: 1px solid rgba(56, 189, 248, 0.25); background: rgba(15, 23, 42, 0.6); }
+    .file-link:hover { background: rgba(56, 189, 248, 0.18); border-color: #38bdf8; color: #bae6fd; text-decoration: underline; }
+    .inspector-overlay { display: none; position: fixed; inset: 0; background: rgba(2, 6, 23, 0.82); backdrop-filter: blur(4px); z-index: 9999; align-items: center; justify-content: center; padding: 20px; }
+    .inspector-modal { background: #0f172a; border: 2px solid #0284c7; border-radius: 12px; width: 100%; max-width: 1060px; max-height: 90vh; display: flex; flex-direction: column; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.85); overflow: hidden; }
+    .inspector-header { padding: 16px 22px; background: linear-gradient(90deg, #091526 0%, #1e293b 100%); border-bottom: 1px solid #334155; display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
+    .inspector-body { padding: 18px 22px; overflow-y: auto; display: flex; flex-direction: column; gap: 14px; }
+    .inspector-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    .inspector-section { background: #090d16; border: 1px solid #334155; border-radius: 8px; padding: 14px; }
+    .inspector-section h3 { margin: 0 0 10px 0; font-size: 13px; text-transform: uppercase; letter-spacing: 0.6px; color: #38bdf8; border-bottom: 1px solid #1e293b; padding-bottom: 6px; display: flex; justify-content: space-between; align-items: center; }
+    .kv-row { display: grid; grid-template-columns: 155px 1fr; gap: 8px; padding: 5px 0; border-bottom: 1px dashed rgba(51, 65, 85, 0.55); font-size: 12.5px; align-items: baseline; }
+    .kv-row:last-child { border-bottom: none; }
+    .kv-label { color: var(--muted); font-weight: 600; font-size: 11.5px; }
+    .kv-val { color: #f8fafc; word-break: break-all; }
   </style>
 </head>
 <body>
@@ -652,7 +665,8 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       <table id="attestedFilesTable">
         <thead>
           <tr>
-            <th>File Name</th>
+            <th>File Name (Click to Inspect)</th>
+            <th>Owner</th>
             <th>Type</th>
             <th>Classified Tier</th>
             <th>AI Policy</th>
@@ -696,7 +710,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       <table id="prevalidatedFilesTable">
         <thead>
           <tr>
-            <th>File Name</th>
+            <th>File Name (Click to Inspect)</th>
             <th>Attestation State</th>
             <th>Tier</th>
             <th>Prevalidator Verdict</th>
@@ -717,7 +731,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
         <table id="entriesTable">
           <thead>
             <tr>
-              <th>Locator</th>
+              <th>Locator (Click to Inspect)</th>
               <th>Tier</th>
               <th>Clearance</th>
               <th>Egress</th>
@@ -788,6 +802,134 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 
         <h2 style="margin-top: 16px;">Gateway / Prevalidator Response (<span id="statusSpan">-</span>)</h2>
         <pre id="responseBox">Ready.</pre>
+      </div>
+    </div>
+  </div>
+
+  <!-- FILE / OBJECT CLASSIFICATION, OWNERSHIP & ATTESTATION INSPECTOR MODAL DRAWER -->
+  <div id="fileInspectorModal" class="inspector-overlay" onclick="if(event.target === this) closeFileInspector()">
+    <div class="inspector-modal">
+      <div class="inspector-header">
+        <div style="flex: 1; min-width: 0;">
+          <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+            <span style="font-size: 20px;">&#128269;</span>
+            <span id="inspTitle" style="font-size: 18px; font-weight: 800; color: #f8fafc;">Object Attestation Inspector</span>
+            <span id="inspTierBadge" class="badge badge-Public">PUBLIC</span>
+            <span id="inspStatusBadge" class="badge badge-Internal">ISSUED</span>
+            <span id="inspPrevalBadge" class="badge badge-PASS" style="display: none;">PASS</span>
+          </div>
+          <div style="margin-top: 6px; font-size: 12px; color: #93c5fd; font-family: ui-monospace, monospace; word-break: break-all;">
+            Canonical Locator: <strong id="inspLocator">-</strong>
+          </div>
+        </div>
+        <div style="display: flex; align-items: center; gap: 8px; flex-shrink: 0;">
+          <button class="btn btn-green" style="padding: 6px 12px; font-size: 12px;" onclick="loadInspectedFileIntoPlayground()">&#129514; Load in Prompt Playground</button>
+          <button class="btn btn-dark" style="padding: 6px 12px; font-size: 12px;" onclick="copyInspectedJson()">&#128203; Copy Signed DSSE JSON</button>
+          <button class="btn" style="background: #dc2626; padding: 6px 12px; font-size: 12px;" onclick="closeFileInspector()">&#10005; Close</button>
+        </div>
+      </div>
+
+      <div class="inspector-body">
+        <div id="inspBanner" class="english-verdict" style="margin-bottom: 0; font-size: 13px; padding: 10px 14px;">
+          Loading full 32-field POD in-toto v1 Attestation Statement &amp; DSSE signature envelope...
+        </div>
+
+        <div class="inspector-grid">
+          <!-- GROUP 1 & 2: OWNERSHIP, STEWARDSHIP & ASSET IDENTITY -->
+          <div class="inspector-section">
+            <h3>
+              <span>&#128100; Ownership, Governance &amp; Asset Identity</span>
+              <span style="font-size: 10.5px; color: var(--muted);">Groups 1 &amp; 2</span>
+            </h3>
+            <div class="kv-row"><div class="kv-label">Accountable Owner</div><div id="inspOwner" class="kv-val" style="color: #38bdf8; font-weight: 700;">-</div></div>
+            <div class="kv-row"><div class="kv-label">Data Steward</div><div id="inspSteward" class="kv-val">-</div></div>
+            <div class="kv-row"><div class="kv-label">Organizational Unit</div><div id="inspOrgUnit" class="kv-val">-</div></div>
+            <div class="kv-row"><div class="kv-label">Jurisdiction</div><div id="inspJurisdiction" class="kv-val">-</div></div>
+            <div class="kv-row"><div class="kv-label">Attestation Record ID</div><div class="kv-val"><code id="inspRecordId">-</code></div></div>
+            <div class="kv-row"><div class="kv-label">Object Type &amp; Env</div><div class="kv-val"><code id="inspObjTypeEnv">-</code></div></div>
+          </div>
+
+          <!-- GROUP 5: CLASSIFICATION & DETECTED SENSITIVE ENTITIES -->
+          <div class="inspector-section">
+            <h3>
+              <span>&#128270; Classification &amp; Sensitive Entity Findings</span>
+              <span style="font-size: 10.5px; color: var(--muted);">Group 5</span>
+            </h3>
+            <div class="kv-row"><div class="kv-label">Classified Tier</div><div id="inspClassTier" class="kv-val">-</div></div>
+            <div class="kv-row"><div class="kv-label">Confidence Score</div><div id="inspConfidence" class="kv-val" style="font-weight: 700; color: #34d399;">-</div></div>
+            <div class="kv-row"><div class="kv-label">Classifier Engine</div><div class="kv-val"><code id="inspClassifierEngine">-</code></div></div>
+            <div style="margin-top: 8px;">
+              <div class="kv-label" style="margin-bottom: 6px;">Detected Sensitive Entity Categories (PII / PHI / PCI / Labels):</div>
+              <div id="inspSensitiveCats" style="background: #0f172a; border: 1px solid #1e293b; border-radius: 6px; padding: 8px; max-height: 115px; overflow-y: auto; font-size: 12px;">
+                -
+              </div>
+            </div>
+          </div>
+
+          <!-- GROUP 6: AI HANDLING & ZERO-TRUST ENFORCEMENT POLICY -->
+          <div class="inspector-section">
+            <h3>
+              <span>&#128737; AI Handling &amp; Zero-Trust Gate Policy</span>
+              <span style="font-size: 10.5px; color: var(--muted);">Group 6</span>
+            </h3>
+            <div class="kv-row"><div class="kv-label">AI Eligibility Rule</div><div id="inspAiRule" class="kv-val">-</div></div>
+            <div class="kv-row"><div class="kv-label">Minimum Clearance</div><div id="inspMinClearance" class="kv-val">-</div></div>
+            <div class="kv-row"><div class="kv-label">Allowed Egress Class</div><div id="inspEgressClass" class="kv-val">-</div></div>
+            <div class="kv-row"><div class="kv-label">Allow RAG Indexing</div><div id="inspAllowRag" class="kv-val">-</div></div>
+            <div class="kv-row"><div class="kv-label">Allow Model Training</div><div id="inspAllowTrain" class="kv-val">-</div></div>
+            <div class="kv-row"><div class="kv-label">Redaction Categories</div><div class="kv-val"><code id="inspRedactCats">-</code></div></div>
+          </div>
+
+          <!-- GROUP 4: CRYPTOGRAPHIC INTEGRITY & CHUNK DIGESTS -->
+          <div class="inspector-section">
+            <h3>
+              <span>&#128272; Cryptographic Integrity &amp; RAG Chunk Digests</span>
+              <span style="font-size: 10.5px; color: var(--muted);">Group 4</span>
+            </h3>
+            <div class="kv-row"><div class="kv-label">Attested SHA-256</div><div class="kv-val"><code id="inspContentSha" style="color: #34d399;">-</code></div></div>
+            <div class="kv-row"><div class="kv-label">Observed Disk SHA-256</div><div class="kv-val"><code id="inspObservedSha">-</code></div></div>
+            <div class="kv-row"><div class="kv-label">Extracted Text SHA-256</div><div class="kv-val"><code id="inspTextSha">-</code></div></div>
+            <div class="kv-row"><div class="kv-label">Schema SHA-256</div><div class="kv-val"><code id="inspSchemaSha">-</code></div></div>
+            <div class="kv-row"><div class="kv-label">Fingerprint Method</div><div class="kv-val"><code id="inspFpMethod">-</code></div></div>
+            <div class="kv-row"><div class="kv-label">Size &amp; Row Count</div><div id="inspSizeRows" class="kv-val">-</div></div>
+            <div class="kv-row"><div class="kv-label">Verified Chunk Hashes</div><div id="inspChunkCount" class="kv-val">-</div></div>
+          </div>
+
+          <!-- GROUP 3: PROVENANCE, SCANNER & OPENLINEAGE -->
+          <div class="inspector-section">
+            <h3>
+              <span>&#129517; Provenance, Discovery &amp; OpenLineage</span>
+              <span style="font-size: 10.5px; color: var(--muted);">Group 3</span>
+            </h3>
+            <div class="kv-row"><div class="kv-label">Attested By Engine</div><div class="kv-val"><code id="inspAttestedBy">-</code></div></div>
+            <div class="kv-row"><div class="kv-label">Source System</div><div class="kv-val"><code id="inspSourceSystem">-</code></div></div>
+            <div class="kv-row"><div class="kv-label">Scanner Version</div><div class="kv-val"><code id="inspScannerVer">-</code></div></div>
+            <div class="kv-row"><div class="kv-label">Discovered At</div><div class="kv-val"><code id="inspDiscoveredAt">-</code></div></div>
+            <div class="kv-row"><div class="kv-label">Upstream Lineage</div><div id="inspDerivedFrom" class="kv-val">-</div></div>
+          </div>
+
+          <!-- GROUP 7: LIFECYCLE, VALIDITY & DSSE SIGNATURE -->
+          <div class="inspector-section">
+            <h3>
+              <span>&#9201; Lifecycle, Validity &amp; Ed25519 DSSE Signature</span>
+              <span style="font-size: 10.5px; color: var(--muted);">Group 7</span>
+            </h3>
+            <div class="kv-row"><div class="kv-label">Lifecycle Status</div><div id="inspLifeStatus" class="kv-val">-</div></div>
+            <div class="kv-row"><div class="kv-label">Issued At (UTC)</div><div class="kv-val"><code id="inspIssuedAt">-</code></div></div>
+            <div class="kv-row"><div class="kv-label">Expires At &amp; TTL</div><div class="kv-val"><code id="inspExpiresAt">-</code></div></div>
+            <div class="kv-row"><div class="kv-label">Previous Record ID</div><div class="kv-val"><code id="inspPrevRecId">-</code></div></div>
+            <div class="kv-row"><div class="kv-label">Active Snapshot Status</div><div id="inspSnapStatus" class="kv-val">-</div></div>
+            <div class="kv-row"><div class="kv-label">DSSE Signing Key ID</div><div class="kv-val"><code id="inspDsseKeyId" style="color: #a78bfa;">-</code></div></div>
+          </div>
+        </div>
+
+        <!-- EXPANDABLE CHUNK HASHES & RAW IN-TOTO / DSSE ENVELOPE JSON -->
+        <details style="background: #090d16; border: 1px solid #334155; border-radius: 8px; padding: 10px 14px;">
+          <summary style="cursor: pointer; font-size: 12.5px; font-weight: 700; color: #93c5fd;">
+            &#128196; View Raw In-Toto v1 Attestation Statement, DSSE Signature Envelope &amp; Canonical Chunk Hashes JSON
+          </summary>
+          <pre id="inspRawJson" style="margin-top: 10px; max-height: 240px; overflow-y: auto; font-size: 11.5px; color: #cbd5e1;">-</pre>
+        </details>
       </div>
     </div>
   </div>
@@ -1175,7 +1317,13 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
           headers: { 'Content-Type': 'application/json', 'X-POD-Admin-Key': ADMIN_KEY },
           body: JSON.stringify(body)
         });
-        const data = await resp.json();
+        const rawText = await resp.text();
+        let data = {};
+        try {
+          data = JSON.parse(rawText);
+        } catch (parseErr) {
+          data = { detail: rawText || `HTTP ${resp.status}` };
+        }
         if (!resp.ok) {
           document.getElementById('attestStatusText').textContent = 'Error: ' + (data.detail || resp.status);
           document.getElementById('attestEnglishBanner').textContent = 'Error: ' + (data.detail || resp.status);
@@ -1195,8 +1343,14 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
         const tbody = document.querySelector('#attestedFilesTable tbody');
         tbody.innerHTML = '';
         (data.files || []).forEach(f => {
+          if (f.locator) {
+            fileInspectorCache[f.locator] = Object.assign({}, fileInspectorCache[f.locator] || {}, f);
+          }
           const tr = document.createElement('tr');
-          tr.innerHTML = `<td><strong>${f.file_name}</strong></td>
+          const safeLoc = String(f.locator || '').replace(/'/g, "\\'");
+          const ownerShort = f.owner || 'fileshare-owners@example.org';
+          tr.innerHTML = `<td><a class="file-link" title="Click to inspect all 32 classification, ownership, policy & DSSE fields" onclick="openFileInspector('${safeLoc}')">&#128269; ${f.file_name}</a></td>
+            <td><code style="color:#93c5fd;">${ownerShort}</code></td>
             <td><code>${f.object_type}</code></td>
             <td><span class="badge badge-${f.tier}">${f.tier}</span></td>
             <td><code>${f.ai_eligibility} / ${f.egress_class}</code></td>
@@ -1266,10 +1420,23 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       const tbody = document.querySelector('#prevalidatedFilesTable tbody');
       tbody.innerHTML = '';
       (data.files || []).forEach(f => {
+        if (f.locator) {
+          fileInspectorCache[f.locator] = Object.assign({}, fileInspectorCache[f.locator] || {}, {
+            locator: f.locator,
+            file_name: f.file_name,
+            observed_sha256: f.observed_sha256,
+            attestation_state: f.attestation_state,
+            preval_verdict: f.verdict,
+            preval_passed: f.passed,
+            preval_reason_detail: f.reason_detail,
+            preval_reason_codes: f.reason_codes || []
+          });
+        }
         const tr = document.createElement('tr');
         const verdictBadge = f.verdict.startsWith('OBSERVED') ? 'badge-Confidential' : (f.passed ? 'badge-PASS' : 'badge-FAIL');
         const tierBadge = f.tier && f.tier !== 'NONE' ? `badge-${f.tier}` : 'badge-FAIL';
-        tr.innerHTML = `<td><strong>${f.file_name}</strong></td>
+        const safeLoc = String(f.locator || '').replace(/'/g, "\\'");
+        tr.innerHTML = `<td><a class="file-link" title="Click to inspect full classification, ownership & Prevalidator verdict" onclick="openFileInspector('${safeLoc}')">&#128269; ${f.file_name}</a></td>
           <td><code>${f.attestation_state}</code></td>
           <td><span class="badge ${tierBadge}">${f.tier || 'UNATTESTED'}</span></td>
           <td><span class="badge ${verdictBadge}">${f.verdict}</span></td>
@@ -1332,8 +1499,12 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
         const tbody = document.querySelector('#entriesTable tbody');
         tbody.innerHTML = '';
         Object.values(s.entries).forEach(e => {
+          if (e.locator) {
+            fileInspectorCache[e.locator] = Object.assign({}, fileInspectorCache[e.locator] || {}, e);
+          }
           const tr = document.createElement('tr');
-          tr.innerHTML = `<td><code>${e.locator}</code></td>
+          const safeLoc = String(e.locator || '').replace(/'/g, "\\'");
+          tr.innerHTML = `<td><a class="file-link" title="Click to inspect full attestation statement & ownership" onclick="openFileInspector('${safeLoc}')">&#128269; <code>${e.locator}</code></a></td>
             <td><span class="badge badge-${e.tier}">${e.tier}</span></td>
             <td>${e.minimum_clearance}</td>
             <td><code>${e.egress_class}</code></td>
@@ -1733,16 +1904,20 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       const streamEl = document.getElementById('crTickerStream');
       if (streamEl && Array.isArray(data.ticker_feed)) {
         streamEl.innerHTML = data.ticker_feed.map(item => {
+          const safeLoc = String(item.locator || '').replace(/'/g, "\\'");
+          const clickablePath = item.locator
+            ? `<a class="file-link" style="padding:0 5px;font-size:11.5px;" onclick="openFileInspector('${safeLoc}')">&#128269; ${item.path}</a>`
+            : `<span>${item.path}</span>`;
           if (item.kind === 'delta') {
-            return `<div style="color:#34d399;">[${item.timestamp}] ⚡ <strong>[ATTESTING DELTA]</strong> ${item.path} &rarr; <span class="badge badge-${item.tier || 'Internal'}" style="padding:1px 6px;font-size:10px;">${item.tier || ''}</span> <span style="color:#94a3b8;">(${item.detail}${item.sha256 ? ' • sha256: ' + item.sha256 : ''})</span></div>`;
+            return `<div style="color:#34d399;">[${item.timestamp}] ⚡ <strong>[ATTESTING DELTA]</strong> ${clickablePath} &rarr; <span class="badge badge-${item.tier || 'Internal'}" style="padding:1px 6px;font-size:10px;">${item.tier || ''}</span> <span style="color:#94a3b8;">(${item.detail}${item.sha256 ? ' • sha256: ' + item.sha256 : ''})</span></div>`;
           } else if (item.kind === 'snapshot') {
             return `<div style="color:#a78bfa; font-weight:700;">[${item.timestamp}] 📦 [ROLLING MICRO-SNAPSHOT] ${item.path} — ${item.detail}</div>`;
           } else if (item.kind === 'stop') {
             return `<div style="color:#f87171; font-weight:700;">[${item.timestamp}] 🛑 [ENTERPRISE SCAN STOPPED] ${item.path} — ${item.detail}</div>`;
           } else if (item.kind === 'revoke') {
-            return `<div style="color:#f87171; font-weight:700;">[${item.timestamp}] 🚫 [REVOKED DELETED] ${item.path} — ${item.detail}</div>`;
+            return `<div style="color:#f87171; font-weight:700;">[${item.timestamp}] 🚫 [REVOKED DELETED] ${clickablePath} — ${item.detail}</div>`;
           } else {
-            return `<div style="color:#64748b;">[${item.timestamp}] ⏭ [UNCHANGED SKIP] <span style="color:#94a3b8;">${item.path}</span> (${item.detail})</div>`;
+            return `<div style="color:#64748b;">[${item.timestamp}] ⏭ [UNCHANGED SKIP] ${clickablePath} (${item.detail})</div>`;
           }
         }).join('');
       }
@@ -1763,6 +1938,234 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
         if (!resp.ok) return;
         const data = await resp.json();
         applyCrawlerTelemetryToDom(data, renderTargets);
+      } catch (e) {}
+    }
+
+    const fileInspectorCache = {};
+    let currentlyInspectedLocator = null;
+    let currentlyInspectedFullPayload = null;
+
+    function closeFileInspector() {
+      const modal = document.getElementById('fileInspectorModal');
+      if (modal) modal.style.display = 'none';
+    }
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') closeFileInspector();
+    });
+
+    function renderInspectorFields(locator, cached, apiData) {
+      const rec = (apiData && apiData.record) || {};
+      const pred = (apiData && apiData.predicate) || (rec.statement && rec.statement.predicate) || {};
+      const ident = pred.identity || {};
+      const own = pred.ownership || {};
+      const prov = pred.provenance || {};
+      const integ = pred.integrity || {};
+      const classif = pred.classification || {};
+      const hand = pred.handling || {};
+      const pol = hand.policy || {};
+      const life = pred.lifecycle || {};
+      const env = (apiData && apiData.dsse_envelope) || rec.dsse_envelope || null;
+      const snapEntry = (apiData && apiData.snapshot_entry) || null;
+      const isFound = Boolean((apiData && (apiData.found || apiData.held_in_review)) || cached.record_id || cached.content_sha256);
+
+      const fileName = ident.display_name || cached.display_name || cached.file_name || (locator ? locator.split('/').pop() : locator);
+      const tier = classif.tier || rec.tier || cached.tier || (snapEntry && snapEntry.tier) || 'UNATTESTED';
+      const statusStr = life.status || rec.status || cached.status || cached.attestation_state || (isFound ? 'issued' : 'UNATTESTED (NO SIGNED RECORD)');
+
+      document.getElementById('inspTitle').textContent = fileName;
+      document.getElementById('inspLocator').textContent = locator;
+
+      const tierBadge = document.getElementById('inspTierBadge');
+      tierBadge.textContent = tier;
+      tierBadge.className = 'badge ' + (tier && tier !== 'NONE' && tier !== 'UNATTESTED' ? `badge-${tier}` : 'badge-FAIL');
+
+      const statusBadge = document.getElementById('inspStatusBadge');
+      statusBadge.textContent = String(statusStr).toUpperCase();
+      statusBadge.className = 'badge ' + (String(statusStr).toLowerCase().includes('unattested') || String(statusStr).toLowerCase().includes('revoked') ? 'badge-FAIL' : 'badge-Internal');
+
+      const prevalBadge = document.getElementById('inspPrevalBadge');
+      if (cached.preval_verdict) {
+        prevalBadge.style.display = 'inline-block';
+        prevalBadge.textContent = `Prevalidator: ${cached.preval_verdict}`;
+        prevalBadge.className = 'badge ' + (cached.preval_passed ? 'badge-PASS' : 'badge-FAIL');
+      } else if (snapEntry) {
+        prevalBadge.style.display = 'inline-block';
+        prevalBadge.textContent = `Snapshot Gate: ${snapEntry.ai_eligibility.toUpperCase()}`;
+        prevalBadge.className = 'badge badge-PASS';
+      } else {
+        prevalBadge.style.display = 'none';
+      }
+
+      const banner = document.getElementById('inspBanner');
+      if (!isFound && (!tier || tier === 'NONE' || tier === 'UNATTESTED')) {
+        banner.className = 'english-verdict has-failures';
+        banner.innerHTML = `<strong>&#9888; UNATTESTED OBJECT (Fail-Closed Default Deny):</strong> <code>${fileName}</code> exists in the target directory/store (` +
+          `observed SHA-256: <code>${(cached.observed_sha256 || 'unhashed').slice(0, 16)}…</code>), but has <strong>NO signed attestation record</strong> in the Registry or Active Snapshot. ` +
+          `The Prevalidator blocks all AI requests referencing this object until you click <strong>1. Run Attestation on Directory (Engine)</strong>.`;
+      } else {
+        banner.className = 'english-verdict';
+        const ownerVal = own.owner || rec.owner || cached.owner || 'fileshare-owners@example.org';
+        const stewardVal = own.steward || cached.steward || 'data-governance-steward@contoso.com';
+        const aiRuleVal = pol.ai_eligibility || rec.ai_eligibility || cached.ai_eligibility || (snapEntry && snapEntry.ai_eligibility) || 'deny';
+        const egressVal = pol.egress_class || rec.egress_class || cached.egress_class || (snapEntry && snapEntry.egress_class) || 'local_only';
+        banner.innerHTML = `<strong>&#10004; Signed POD Attestation Record:</strong> <code>${fileName}</code> is owned by <strong>${ownerVal}</strong> (Steward: <strong>${stewardVal}</strong>), ` +
+          `classified as <strong>${tier}</strong> (${((Number(classif.confidence ?? rec.confidence ?? cached.confidence ?? 0.95)) * 100).toFixed(1)}% confidence via <code>${classif.classifier_engine || cached.classifier_engine || 'presidio'}</code>), ` +
+          `with AI policy <code>ai_eligibility=${aiRuleVal}</code> and max egress <code>${egressVal}</code>.`;
+      }
+
+      // Group 1 & 2: Ownership & Identity
+      document.getElementById('inspOwner').textContent = own.owner || rec.owner || cached.owner || (isFound ? 'fileshare-owners@example.org' : 'Unassigned (Unattested File)');
+      document.getElementById('inspSteward').textContent = own.steward || cached.steward || (isFound ? 'data-governance-steward@contoso.com' : 'None — Awaiting Attestation');
+      document.getElementById('inspOrgUnit').textContent = own.org_unit || cached.org_unit || (isFound ? 'Enterprise Data & AI Governance' : '-');
+      document.getElementById('inspJurisdiction').textContent = own.jurisdiction || cached.jurisdiction || (isFound ? 'GLOBAL' : '-');
+      document.getElementById('inspRecordId').textContent = ident.record_id || rec.record_id || cached.record_id || 'NONE (Unattested)';
+      document.getElementById('inspObjTypeEnv').textContent = `${ident.object_type || rec.object_type || cached.object_type || 'file'} • ${ident.environment || cached.environment || 'production'}`;
+
+      // Group 5: Classification & Sensitive Entities
+      document.getElementById('inspClassTier').innerHTML = `<span class="badge ${tier && tier !== 'NONE' && tier !== 'UNATTESTED' ? 'badge-' + tier : 'badge-FAIL'}">${tier}</span>`;
+      const confNum = Number(classif.confidence ?? rec.confidence ?? cached.confidence ?? (isFound ? 0.95 : 0));
+      document.getElementById('inspConfidence').textContent = isFound ? `${(confNum * 100).toFixed(1)}% (${confNum.toFixed(4)})` : '0.0% (Not Scanned)';
+      document.getElementById('inspClassifierEngine').textContent = classif.classifier_engine || cached.classifier_engine || (isFound ? 'presidio' : 'Not Scanned');
+
+      const cats = classif.sensitive_categories || cached.sensitive_categories || [];
+      const catsBox = document.getElementById('inspSensitiveCats');
+      if (!isFound && (!tier || tier === 'NONE' || tier === 'UNATTESTED')) {
+        catsBox.innerHTML = `<span style="color:#f87171;">&#9888; File has not been scanned by the Attestation Engine yet.</span>`;
+      } else if (!Array.isArray(cats) || cats.length === 0) {
+        catsBox.innerHTML = `<span style="color:#34d399;">&#10004; 0 Sensitive PII / PHI / PCI / Credential Entities Detected — Verified Clean (${tier})</span>`;
+      } else {
+        catsBox.innerHTML = cats.map(c => {
+          const confStr = c.max_confidence !== undefined ? `${(Number(c.max_confidence) * 100).toFixed(0)}% conf` : '';
+          const colStr = c.column_or_field ? ` • field: <code>${c.column_or_field}</code>` : '';
+          return `<div style="display:flex; justify-content:space-between; align-items:center; padding:4px 6px; border-bottom:1px solid #1e293b;">
+            <span><strong style="color:#fbbf24;">${c.category}</strong>${colStr}</span>
+            <span><span class="badge badge-Confidential" style="font-size:10px;">Count: ${c.count}</span> <code style="color:#94a3b8;">${confStr}</code></span>
+          </div>`;
+        }).join('');
+      }
+
+      // Group 6: AI Handling & Policy
+      const aiElig = pol.ai_eligibility || rec.ai_eligibility || cached.ai_eligibility || (snapEntry && snapEntry.ai_eligibility) || 'deny (fail-closed)';
+      const minClear = pol.minimum_clearance || rec.minimum_clearance || cached.minimum_clearance || (snapEntry && snapEntry.minimum_clearance) || 'Restricted';
+      const egressCls = pol.egress_class || rec.egress_class || cached.egress_class || (snapEntry && snapEntry.egress_class) || 'local_only';
+      const allowRag = hand.allow_rag_indexing !== undefined ? hand.allow_rag_indexing : (cached.allow_rag_indexing !== undefined ? cached.allow_rag_indexing : (tier === 'Public' || tier === 'Internal'));
+      const allowTrain = Boolean(hand.allow_model_training ?? cached.allow_model_training ?? false);
+      const redactList = hand.redaction_categories || cached.redaction_categories || cats.map(c => c.category);
+
+      document.getElementById('inspAiRule').innerHTML = `<code>${aiElig}</code>`;
+      document.getElementById('inspMinClearance').innerHTML = `<span class="badge badge-${minClear}">${minClear}</span>`;
+      document.getElementById('inspEgressClass').innerHTML = `<code>${egressCls}</code>`;
+      document.getElementById('inspAllowRag').innerHTML = allowRag ? '<span style="color:#34d399;font-weight:700;">&#10004; Allowed (true)</span>' : '<span style="color:#f87171;font-weight:700;">&#10006; Blocked (false)</span>';
+      document.getElementById('inspAllowTrain').innerHTML = allowTrain ? '<span style="color:#34d399;">Allowed (true)</span>' : '<span style="color:#94a3b8;">Prohibited (false)</span>';
+      document.getElementById('inspRedactCats').textContent = (Array.isArray(redactList) && redactList.length > 0) ? redactList.join(', ') : 'None';
+
+      // Group 4: Cryptographic Integrity & Chunks
+      const attSha = integ.content_sha256 || rec.content_sha256 || cached.content_sha256 || (snapEntry && snapEntry.content_sha256) || '';
+      const obsSha = cached.observed_sha256 || attSha || '';
+      const textSha = integ.extracted_text_sha256 || rec.extracted_text_sha256 || cached.extracted_text_sha256 || (snapEntry && snapEntry.extracted_text_sha256) || '';
+      const schemaSha = integ.schema_sha256 || rec.schema_sha256 || cached.schema_sha256 || (snapEntry && snapEntry.schema_sha256) || '';
+      const chunks = integ.chunk_hashes || rec.chunk_hashes || cached.chunk_hashes || (snapEntry && snapEntry.chunk_hashes) || [];
+      const sizeBytes = integ.size_bytes ?? cached.size_bytes;
+      const rowCount = integ.row_count ?? cached.row_count;
+
+      document.getElementById('inspContentSha').textContent = attSha || 'NONE (Unattested)';
+      if (obsSha && attSha) {
+        const match = obsSha.toLowerCase() === attSha.toLowerCase();
+        document.getElementById('inspObservedSha').innerHTML = `${obsSha} ${match ? '<span style="color:#34d399;font-weight:700;">(&#10004; Match)</span>' : '<span style="color:#ef4444;font-weight:700;">(&#10006; DRIFT!)</span>'}`;
+      } else {
+        document.getElementById('inspObservedSha').textContent = obsSha || '-';
+      }
+      document.getElementById('inspTextSha').textContent = textSha || '-';
+      document.getElementById('inspSchemaSha').textContent = schemaSha || 'N/A (Unstructured File)';
+      document.getElementById('inspFpMethod').textContent = integ.fingerprint_method || cached.fingerprint_method || 'raw_bytes_sha256';
+      document.getElementById('inspSizeRows').textContent = `${sizeBytes !== null && sizeBytes !== undefined ? Number(sizeBytes).toLocaleString() + ' bytes' : '-'}${rowCount !== null && rowCount !== undefined ? ' • ' + Number(rowCount).toLocaleString() + ' rows' : ''}`;
+      document.getElementById('inspChunkCount').innerHTML = `<strong style="color:#38bdf8;">${Array.isArray(chunks) ? chunks.length : 0}</strong> canonical paragraph/row SHA-256 chunk digest(s)`;
+
+      // Group 3: Provenance
+      document.getElementById('inspAttestedBy').textContent = prov.attested_by || cached.attested_by || (isFound ? 'pod-engine-v0.1' : '-');
+      document.getElementById('inspSourceSystem').textContent = prov.source_system || cached.source_system || (isFound ? 'tika+presidio' : '-');
+      document.getElementById('inspScannerVer').textContent = prov.scanner_version || cached.scanner_version || '0.1.0';
+      document.getElementById('inspDiscoveredAt').textContent = prov.discovered_at || cached.discovered_at || rec.issued_at || '-';
+      const derived = prov.derived_from || cached.derived_from || [];
+      document.getElementById('inspDerivedFrom').innerHTML = (Array.isArray(derived) && derived.length > 0)
+        ? derived.map(d => `<code>${d.locator || d}</code>`).join(', ')
+        : '<span style="color:#94a3b8;">Primary Source Object (0 upstream lineage dependencies)</span>';
+
+      // Group 7: Lifecycle & DSSE Signature
+      document.getElementById('inspLifeStatus').innerHTML = `<code>${statusStr}</code>${cached.preval_reason_detail ? ' — <span style="color:#93c5fd;">' + cached.preval_reason_detail + '</span>' : ''}`;
+      document.getElementById('inspIssuedAt').textContent = life.issued_at || rec.issued_at || cached.issued_at || '-';
+      const expStr = life.expires_at || rec.expires_at || cached.expires_at || (snapEntry && snapEntry.expires_at) || '-';
+      const ttlStr = life.ttl_days || cached.ttl_days ? ` (TTL: ${life.ttl_days || cached.ttl_days} days)` : '';
+      document.getElementById('inspExpiresAt').textContent = `${expStr}${ttlStr}`;
+      document.getElementById('inspPrevRecId').textContent = life.previous_record_id || cached.previous_record_id || 'None (Initial Record Version)';
+
+      const inSnap = Boolean((apiData && apiData.in_active_snapshot) || snapEntry);
+      document.getElementById('inspSnapStatus').innerHTML = inSnap
+        ? `<span style="color:#34d399;font-weight:700;">&#10004; Active in In-Memory Snapshot${apiData && apiData.snapshot_sequence ? ' #' + apiData.snapshot_sequence : ''}</span>`
+        : `<span style="color:#f87171;font-weight:700;">&#10006; Not in Active Snapshot (Blocked at Gate)</span>`;
+
+      const sigEntry = (env && Array.isArray(env.signatures) && env.signatures[0]) || null;
+      document.getElementById('inspDsseKeyId').textContent = sigEntry
+        ? `keyid: ${sigEntry.keyid} (Ed25519 • sig: ${String(sigEntry.sig || '').slice(0, 20)}…)`
+        : (inSnap ? 'Signed in Active DSSE Snapshot Contract' : 'Unsigned');
+
+      const fullJsonObj = {
+        locator,
+        in_active_snapshot: inSnap,
+        prevalidator_evaluation: cached.preval_verdict ? {
+          verdict: cached.preval_verdict,
+          passed: cached.preval_passed,
+          reason_detail: cached.preval_reason_detail,
+          observed_sha256: cached.observed_sha256
+        } : undefined,
+        intoto_statement: (rec && rec.statement) || (Object.keys(pred).length ? { _type: "https://in-toto.io/Statement/v1", predicateType: "https://schemas.proofofdata.dev/attestation/v0.1", predicate: pred } : null),
+        dsse_envelope: env,
+        reviews: (apiData && apiData.reviews) || []
+      };
+      currentlyInspectedFullPayload = fullJsonObj;
+      document.getElementById('inspRawJson').textContent = JSON.stringify(fullJsonObj, null, 2);
+    }
+
+    async function openFileInspector(locator) {
+      if (!locator) return;
+      currentlyInspectedLocator = locator;
+      const modal = document.getElementById('fileInspectorModal');
+      if (modal) modal.style.display = 'flex';
+
+      const cached = fileInspectorCache[locator] || {};
+      renderInspectorFields(locator, cached, null);
+
+      try {
+        const resp = await fetch(`/v1/admin/record-detail?locator=${encodeURIComponent(locator)}`, {
+          headers: { 'X-POD-Admin-Key': ADMIN_KEY }
+        });
+        if (resp.ok) {
+          const apiData = await resp.json();
+          renderInspectorFields(locator, cached, apiData);
+        }
+      } catch (e) {}
+    }
+
+    function loadInspectedFileIntoPlayground() {
+      if (!currentlyInspectedLocator) return;
+      const cached = fileInspectorCache[currentlyInspectedLocator] || {};
+      const shaAttr = cached.content_sha256 ? ` sha256="${cached.content_sha256}"` : '';
+      document.getElementById('promptInput').value = `Summarize and analyze this object:\n<pod:object locator="${currentlyInspectedLocator}"${shaAttr}>Inspecting ${cached.file_name || currentlyInspectedLocator}</pod:object>`;
+      closeFileInspector();
+      document.getElementById('promptInput').scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+
+    async function copyInspectedJson() {
+      if (!currentlyInspectedFullPayload) return;
+      try {
+        await navigator.clipboard.writeText(JSON.stringify(currentlyInspectedFullPayload, null, 2));
+        const banner = document.getElementById('inspBanner');
+        if (banner) {
+          const prev = banner.innerHTML;
+          banner.innerHTML = '<strong>&#10004; Copied full In-Toto v1 Attestation Statement &amp; DSSE Envelope JSON to clipboard!</strong>';
+          setTimeout(() => { banner.innerHTML = prev; }, 2000);
+        }
       } catch (e) {}
     }
 
@@ -2157,6 +2560,134 @@ DLP_CONNECTOR_HTML = r"""<!DOCTYPE html>
         </thead>
         <tbody id="stage3TableBody"></tbody>
       </table>
+    </div>
+  </div>
+
+  <!-- FILE / OBJECT CLASSIFICATION, OWNERSHIP & ATTESTATION INSPECTOR MODAL DRAWER -->
+  <div id="fileInspectorModal" class="inspector-overlay" onclick="if(event.target === this) closeFileInspector()">
+    <div class="inspector-modal">
+      <div class="inspector-header">
+        <div style="flex: 1; min-width: 0;">
+          <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+            <span style="font-size: 20px;">&#128269;</span>
+            <span id="inspTitle" style="font-size: 18px; font-weight: 800; color: #f8fafc;">Object Attestation Inspector</span>
+            <span id="inspTierBadge" class="badge badge-Public">PUBLIC</span>
+            <span id="inspStatusBadge" class="badge badge-Internal">ISSUED</span>
+            <span id="inspPrevalBadge" class="badge badge-PASS" style="display: none;">PASS</span>
+          </div>
+          <div style="margin-top: 6px; font-size: 12px; color: #93c5fd; font-family: ui-monospace, monospace; word-break: break-all;">
+            Canonical Locator: <strong id="inspLocator">-</strong>
+          </div>
+        </div>
+        <div style="display: flex; align-items: center; gap: 8px; flex-shrink: 0;">
+          <button class="btn btn-green" style="padding: 6px 12px; font-size: 12px;" onclick="loadInspectedFileIntoPlayground()">&#129514; Load in Prompt Playground</button>
+          <button class="btn btn-dark" style="padding: 6px 12px; font-size: 12px;" onclick="copyInspectedJson()">&#128203; Copy Signed DSSE JSON</button>
+          <button class="btn" style="background: #dc2626; padding: 6px 12px; font-size: 12px;" onclick="closeFileInspector()">&#10005; Close</button>
+        </div>
+      </div>
+
+      <div class="inspector-body">
+        <div id="inspBanner" class="english-verdict" style="margin-bottom: 0; font-size: 13px; padding: 10px 14px;">
+          Loading full 32-field POD in-toto v1 Attestation Statement &amp; DSSE signature envelope...
+        </div>
+
+        <div class="inspector-grid">
+          <!-- GROUP 1 & 2: OWNERSHIP, STEWARDSHIP & ASSET IDENTITY -->
+          <div class="inspector-section">
+            <h3>
+              <span>&#128100; Ownership, Governance &amp; Asset Identity</span>
+              <span style="font-size: 10.5px; color: var(--muted);">Groups 1 &amp; 2</span>
+            </h3>
+            <div class="kv-row"><div class="kv-label">Accountable Owner</div><div id="inspOwner" class="kv-val" style="color: #38bdf8; font-weight: 700;">-</div></div>
+            <div class="kv-row"><div class="kv-label">Data Steward</div><div id="inspSteward" class="kv-val">-</div></div>
+            <div class="kv-row"><div class="kv-label">Organizational Unit</div><div id="inspOrgUnit" class="kv-val">-</div></div>
+            <div class="kv-row"><div class="kv-label">Jurisdiction</div><div id="inspJurisdiction" class="kv-val">-</div></div>
+            <div class="kv-row"><div class="kv-label">Attestation Record ID</div><div class="kv-val"><code id="inspRecordId">-</code></div></div>
+            <div class="kv-row"><div class="kv-label">Object Type &amp; Env</div><div class="kv-val"><code id="inspObjTypeEnv">-</code></div></div>
+          </div>
+
+          <!-- GROUP 5: CLASSIFICATION & DETECTED SENSITIVE ENTITIES -->
+          <div class="inspector-section">
+            <h3>
+              <span>&#128270; Classification &amp; Sensitive Entity Findings</span>
+              <span style="font-size: 10.5px; color: var(--muted);">Group 5</span>
+            </h3>
+            <div class="kv-row"><div class="kv-label">Classified Tier</div><div id="inspClassTier" class="kv-val">-</div></div>
+            <div class="kv-row"><div class="kv-label">Confidence Score</div><div id="inspConfidence" class="kv-val" style="font-weight: 700; color: #34d399;">-</div></div>
+            <div class="kv-row"><div class="kv-label">Classifier Engine</div><div class="kv-val"><code id="inspClassifierEngine">-</code></div></div>
+            <div style="margin-top: 8px;">
+              <div class="kv-label" style="margin-bottom: 6px;">Detected Sensitive Entity Categories (PII / PHI / PCI / Labels):</div>
+              <div id="inspSensitiveCats" style="background: #0f172a; border: 1px solid #1e293b; border-radius: 6px; padding: 8px; max-height: 115px; overflow-y: auto; font-size: 12px;">
+                -
+              </div>
+            </div>
+          </div>
+
+          <!-- GROUP 6: AI HANDLING & ZERO-TRUST ENFORCEMENT POLICY -->
+          <div class="inspector-section">
+            <h3>
+              <span>&#128737; AI Handling &amp; Zero-Trust Gate Policy</span>
+              <span style="font-size: 10.5px; color: var(--muted);">Group 6</span>
+            </h3>
+            <div class="kv-row"><div class="kv-label">AI Eligibility Rule</div><div id="inspAiRule" class="kv-val">-</div></div>
+            <div class="kv-row"><div class="kv-label">Minimum Clearance</div><div id="inspMinClearance" class="kv-val">-</div></div>
+            <div class="kv-row"><div class="kv-label">Allowed Egress Class</div><div id="inspEgressClass" class="kv-val">-</div></div>
+            <div class="kv-row"><div class="kv-label">Allow RAG Indexing</div><div id="inspAllowRag" class="kv-val">-</div></div>
+            <div class="kv-row"><div class="kv-label">Allow Model Training</div><div id="inspAllowTrain" class="kv-val">-</div></div>
+            <div class="kv-row"><div class="kv-label">Redaction Categories</div><div class="kv-val"><code id="inspRedactCats">-</code></div></div>
+          </div>
+
+          <!-- GROUP 4: CRYPTOGRAPHIC INTEGRITY & CHUNK DIGESTS -->
+          <div class="inspector-section">
+            <h3>
+              <span>&#128272; Cryptographic Integrity &amp; RAG Chunk Digests</span>
+              <span style="font-size: 10.5px; color: var(--muted);">Group 4</span>
+            </h3>
+            <div class="kv-row"><div class="kv-label">Attested SHA-256</div><div class="kv-val"><code id="inspContentSha" style="color: #34d399;">-</code></div></div>
+            <div class="kv-row"><div class="kv-label">Observed Disk SHA-256</div><div class="kv-val"><code id="inspObservedSha">-</code></div></div>
+            <div class="kv-row"><div class="kv-label">Extracted Text SHA-256</div><div class="kv-val"><code id="inspTextSha">-</code></div></div>
+            <div class="kv-row"><div class="kv-label">Schema SHA-256</div><div class="kv-val"><code id="inspSchemaSha">-</code></div></div>
+            <div class="kv-row"><div class="kv-label">Fingerprint Method</div><div class="kv-val"><code id="inspFpMethod">-</code></div></div>
+            <div class="kv-row"><div class="kv-label">Size &amp; Row Count</div><div id="inspSizeRows" class="kv-val">-</div></div>
+            <div class="kv-row"><div class="kv-label">Verified Chunk Hashes</div><div id="inspChunkCount" class="kv-val">-</div></div>
+          </div>
+
+          <!-- GROUP 3: PROVENANCE, SCANNER & OPENLINEAGE -->
+          <div class="inspector-section">
+            <h3>
+              <span>&#129517; Provenance, Discovery &amp; OpenLineage</span>
+              <span style="font-size: 10.5px; color: var(--muted);">Group 3</span>
+            </h3>
+            <div class="kv-row"><div class="kv-label">Attested By Engine</div><div class="kv-val"><code id="inspAttestedBy">-</code></div></div>
+            <div class="kv-row"><div class="kv-label">Source System</div><div class="kv-val"><code id="inspSourceSystem">-</code></div></div>
+            <div class="kv-row"><div class="kv-label">Scanner Version</div><div class="kv-val"><code id="inspScannerVer">-</code></div></div>
+            <div class="kv-row"><div class="kv-label">Discovered At</div><div class="kv-val"><code id="inspDiscoveredAt">-</code></div></div>
+            <div class="kv-row"><div class="kv-label">Upstream Lineage</div><div id="inspDerivedFrom" class="kv-val">-</div></div>
+          </div>
+
+          <!-- GROUP 7: LIFECYCLE, VALIDITY & DSSE SIGNATURE -->
+          <div class="inspector-section">
+            <h3>
+              <span>&#9201; Lifecycle, Validity &amp; Ed25519 DSSE Signature</span>
+              <span style="font-size: 10.5px; color: var(--muted);">Group 7</span>
+            </h3>
+            <div class="kv-row"><div class="kv-label">Lifecycle Status</div><div id="inspLifeStatus" class="kv-val">-</div></div>
+            <div class="kv-row"><div class="kv-label">Issued At (UTC)</div><div class="kv-val"><code id="inspIssuedAt">-</code></div></div>
+            <div class="kv-row"><div class="kv-label">Expires At &amp; TTL</div><div class="kv-val"><code id="inspExpiresAt">-</code></div></div>
+            <div class="kv-row"><div class="kv-label">Previous Record ID</div><div class="kv-val"><code id="inspPrevRecId">-</code></div></div>
+            <div class="kv-row"><div class="kv-label">Active Snapshot Status</div><div id="inspSnapStatus" class="kv-val">-</div></div>
+            <div class="kv-row"><div class="kv-label">DSSE Signing Key ID</div><div class="kv-val"><code id="inspDsseKeyId" style="color: #a78bfa;">-</code></div></div>
+          </div>
+        </div>
+
+        <!-- EXPANDABLE CHUNK HASHES & RAW IN-TOTO / DSSE ENVELOPE JSON -->
+        <details style="background: #090d16; border: 1px solid #334155; border-radius: 8px; padding: 10px 14px;">
+          <summary style="cursor: pointer; font-size: 12.5px; font-weight: 700; color: #93c5fd;">
+            &#128196; View Raw In-Toto v1 Attestation Statement, DSSE Signature Envelope &amp; Canonical Chunk Hashes JSON
+          </summary>
+          <pre id="inspRawJson" style="margin-top: 10px; max-height: 240px; overflow-y: auto; font-size: 11.5px; color: #cbd5e1;">-</pre>
+        </details>
+      </div>
     </div>
   </div>
 
@@ -2572,14 +3103,49 @@ def create_prevalidator_app(
             r = await client.post(f"{engine_url}/v1/crawler/control", json=body)
             return JSONResponse(status_code=r.status_code, content=r.json())
 
+    @app.get("/v1/admin/record-detail")
+    async def proxy_record_detail(
+        locator: str = Query(..., description="Canonical object locator URI"),
+        x_pod_admin_key: str | None = Header(default=None),
+    ) -> Any:
+        if x_pod_admin_key != admin_key:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid X-POD-Admin-Key")
+        snap = enforcer.snapshot_store.get_active_snapshot()
+        snap_entries = snap.get("entries", {}) if snap else {}
+        snap_entry = snap_entries.get(locator)
+        data: dict[str, Any] = {
+            "found": False,
+            "locator": locator,
+            "in_active_snapshot": snap_entry is not None,
+            "snapshot_id": snap.get("snapshot_id") if snap else None,
+            "snapshot_sequence": snap.get("sequence_number") if snap else None,
+            "snapshot_entry": snap_entry,
+        }
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                r = await client.get(f"{engine_url}/v1/record-detail", params={"locator": locator})
+                if r.status_code == 200:
+                    eng_data = r.json()
+                    data.update(eng_data)
+        except Exception as exc:
+            data["engine_lookup_warning"] = str(exc)
+        return JSONResponse(status_code=200, content=data)
+
     @app.post("/v1/admin/attest-directory")
     async def proxy_attest_directory(request: Request, x_pod_admin_key: str | None = Header(default=None)) -> Any:
         if x_pod_admin_key != admin_key:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid X-POD-Admin-Key")
         body = await request.json()
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            r = await client.post(f"{engine_url}/v1/attest-directory", json=body)
-            return JSONResponse(status_code=r.status_code, content=r.json())
+        try:
+            async with httpx.AsyncClient(timeout=180.0) as client:
+                r = await client.post(f"{engine_url}/v1/attest-directory", json=body)
+                try:
+                    payload = r.json()
+                except Exception:
+                    payload = {"detail": r.text or f"Engine returned HTTP {r.status_code}"}
+                return JSONResponse(status_code=r.status_code, content=payload)
+        except Exception as exc:
+            return JSONResponse(status_code=502, content={"detail": f"Attestation Engine request failed or timed out: {exc}"})
 
     @app.post("/v1/admin/add-unattested-file")
     async def proxy_add_unattested(request: Request, x_pod_admin_key: str | None = Header(default=None)) -> Any:

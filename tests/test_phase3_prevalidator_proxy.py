@@ -554,9 +554,9 @@ def test_enterprise_data_stores_and_event_webhook(tmp_path: Path):
     registry.close()
 
 
-@pytest.mark.asyncio
-async def test_continuous_delta_crawler_pass1_skip_pass2_delta_and_auto_revoke(tmp_path: Path):
+def test_continuous_delta_crawler_pass1_skip_pass2_delta_and_auto_revoke(tmp_path: Path):
     """Test 8: Verify ContinuousDeltaCrawler Pass 1 mtime/size skip, Pass 2 delta attestation, rolling micro-snapshot publishing, and auto-revocation on file deletion."""
+    import asyncio
     import threading
     from engine.continuous_crawler import ContinuousDeltaCrawler
     from engine.pipeline import AttestationEngine
@@ -587,7 +587,7 @@ async def test_continuous_delta_crawler_pass1_skip_pass2_delta_and_auto_revoke(t
     crawler.micro_publish_delta_threshold = 2
 
     # First sweep: both files are new deltas -> Pass 2 deep scan & rolling micro-snapshot published
-    await crawler._sweep_pc_filesystem_target(str(scan_dir))
+    asyncio.run(crawler._sweep_pc_filesystem_target(str(scan_dir)))
     tel1 = crawler.get_telemetry()
     assert tel1["files_swept"] == 2
     assert tel1["deltas_attested"] == 2
@@ -596,7 +596,7 @@ async def test_continuous_delta_crawler_pass1_skip_pass2_delta_and_auto_revoke(t
     assert len(tel1["ticker_feed"]) >= 2
 
     # Second sweep: neither file changed -> Pass 1 mtime_ns + size_bytes skips both in 0 bytes read!
-    await crawler._sweep_pc_filesystem_target(str(scan_dir))
+    asyncio.run(crawler._sweep_pc_filesystem_target(str(scan_dir)))
     tel2 = crawler.get_telemetry()
     assert tel2["files_swept"] == 4
     assert tel2["deltas_attested"] == 2
@@ -604,7 +604,7 @@ async def test_continuous_delta_crawler_pass1_skip_pass2_delta_and_auto_revoke(t
 
     # Delete f1 -> Third sweep auto-revokes f1 and skips unchanged f2
     f1.unlink()
-    await crawler._sweep_pc_filesystem_target(str(scan_dir))
+    asyncio.run(crawler._sweep_pc_filesystem_target(str(scan_dir)))
     tel3 = crawler.get_telemetry()
     assert tel3["deleted_revoked"] == 1
     assert tel3["unchanged_skipped"] == 3

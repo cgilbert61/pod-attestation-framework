@@ -320,6 +320,123 @@ def create_engine_app() -> FastAPI:
         """Pause/resume the Continuous Delta Crawler, update target list, reset watermarks, or focus on a specific drive/cloud URI."""
         return crawler.update_config(payload)
 
+    @app.get("/v1/record-detail")
+    def get_record_detail(locator: str = Query(..., description="Canonical object locator URI")) -> dict[str, Any]:
+        """Return the complete 32-field in-toto v1 Attestation Statement, DSSE signature envelope, ownership, sensitive entity categories, and review queue history for a locator."""
+        rec = registry.lookup_by_locator(locator, include_expired_or_revoked=True)
+        reviews = registry.lookup_reviews_by_locator(locator)
+        if rec:
+            stmt = rec.get("statement") or {}
+            pred = stmt.get("predicate") or {}
+            own = pred.get("ownership") or {}
+            tier = rec.get("tier", "Public")
+            default_stewards = {
+                "Restricted": "privacy-compliance-steward@contoso.com",
+                "Confidential": "dlp-security-steward@contoso.com",
+                "Internal": "engineering-data-steward@contoso.com",
+                "Public": "open-data-steward@contoso.com",
+            }
+            if not own.get("steward"):
+                own["steward"] = default_stewards.get(tier, "data-governance-steward@contoso.com")
+            if not own.get("org_unit"):
+                obj_type = rec.get("object_type", "file")
+                if obj_type in ("database_table", "database_view", "warehouse_table"):
+                    own["org_unit"] = "Enterprise Data Platform & Warehouse"
+                elif locator.startswith(("s3://", "azblob://", "abfss://", "gs://")):
+                    own["org_unit"] = "Cloud Lakehouse & AI Corpus Operations"
+                else:
+                    own["org_unit"] = "Enterprise Data & AI Governance"
+            if not own.get("jurisdiction"):
+                own["jurisdiction"] = "GLOBAL"
+            pred["ownership"] = own
+            stmt["predicate"] = pred
+            rec["statement"] = stmt
+            return {
+                "found": True,
+                "locator": locator,
+                "record": rec,
+                "predicate": pred,
+                "dsse_envelope": rec.get("dsse_envelope"),
+                "reviews": reviews,
+            }
+
+        # Check if there is a pending review queue item (e.g. low-confidence held file)
+        if reviews:
+            latest_rev = reviews[0]
+            meta = latest_rev.get("metadata") or {}
+            return {
+                "found": False,
+                "held_in_review": True,
+                "locator": locator,
+                "record": None,
+                "predicate": {
+                    "identity": {
+                        "record_id": latest_rev.get("review_id"),
+                        "locator": locator,
+                        "object_type": meta.get("object_type", "file"),
+                        "display_name": meta.get("display_name") or locator.rsplit("/", 1)[-1],
+                        "environment": meta.get("environment", "production"),
+                    },
+                    "ownership": {
+                        "owner": meta.get("owner", "fileshare-steward@example.org"),
+                        "steward": "privacy-compliance-steward@contoso.com",
+                        "org_unit": "Enterprise Data & AI Governance",
+                        "jurisdiction": "GLOBAL",
+                    },
+                    "provenance": {
+                        "attested_by": "pod-engine-v0.1 (Held in Review Queue)",
+                        "source_system": meta.get("source_system", "tika+presidio"),
+                        "scanner_version": "0.1.0",
+                        "discovered_at": latest_rev.get("created_at"),
+                        "derived_from": meta.get("derived_from", []),
+                    },
+                    "integrity": {
+                        "content_sha256": meta.get("content_sha256", ""),
+                        "schema_sha256": meta.get("schema_sha256"),
+                        "size_bytes": meta.get("size_bytes"),
+                        "row_count": meta.get("row_count"),
+                        "fingerprint_method": meta.get("fingerprint_method", "raw_bytes_sha256"),
+                        "extracted_text_sha256": meta.get("extracted_text_sha256"),
+                        "chunk_hashes": meta.get("chunk_hashes", []),
+                    },
+                    "classification": {
+                        "tier": latest_rev.get("proposed_tier", "Restricted"),
+                        "confidence": latest_rev.get("confidence", 0.5),
+                        "sensitive_categories": meta.get("sensitive_categories", []),
+                        "classifier_engine": meta.get("classifier_engine", "presidio"),
+                    },
+                    "handling": {
+                        "policy": {
+                            "ai_eligibility": "deny",
+                            "minimum_clearance": "Restricted",
+                            "egress_class": "local_only",
+                        },
+                        "allow_rag_indexing": False,
+                        "allow_model_training": False,
+                        "redaction_categories": [c.get("category") for c in meta.get("sensitive_categories", []) if isinstance(c, dict) and c.get("category")],
+                    },
+                    "lifecycle": {
+                        "status": f"PENDING_REVIEW ({latest_rev.get('reason', 'low_confidence')})",
+                        "issued_at": latest_rev.get("created_at"),
+                        "expires_at": "Held — No Active Record Issued (Fail-Closed)",
+                        "ttl_days": 0,
+                        "previous_record_id": None,
+                    },
+                },
+                "dsse_envelope": None,
+                "reviews": reviews,
+            }
+
+        return {
+            "found": False,
+            "held_in_review": False,
+            "locator": locator,
+            "record": None,
+            "predicate": None,
+            "dsse_envelope": None,
+            "reviews": [],
+        }
+
     @app.post("/v1/attest-directory")
     def attest_directory(req: AttestDirectoryRequest) -> dict[str, Any]:
         """Crawl an Enterprise Data Store (`s3://`, `azblob://`, `gs://`, `postgres://`, `snowflake://`, `bigquery://`) or a PC directory/drive, classify and issue signed records, and publish a fresh snapshot."""
@@ -364,34 +481,83 @@ def create_engine_app() -> FastAPI:
                 rec = item.get("record")
                 rev = item.get("review")
                 if rec:
+                    stmt = rec.get("statement") or {}
+                    pred = stmt.get("predicate") or {}
+                    ident = pred.get("identity") or {}
+                    own = pred.get("ownership") or {}
+                    prov = pred.get("provenance") or {}
+                    integ = pred.get("integrity") or {}
+                    classif = pred.get("classification") or {}
+                    hand = pred.get("handling") or {}
+                    life = pred.get("lifecycle") or {}
                     attested_items.append(
                         {
+                            "record_id": rec.get("record_id") or ident.get("record_id"),
                             "locator": rec["locator"],
                             "file_name": rec["locator"].rsplit("/", 1)[-1],
+                            "display_name": ident.get("display_name") or rec["locator"].rsplit("/", 1)[-1],
                             "object_type": rec["object_type"],
+                            "environment": ident.get("environment", "production"),
                             "tier": rec["tier"],
+                            "confidence": rec.get("confidence", classif.get("confidence", 0.95)),
+                            "classifier_engine": classif.get("classifier_engine", "presidio"),
+                            "sensitive_categories": classif.get("sensitive_categories", []),
+                            "owner": rec.get("owner") or own.get("owner") or req.owner,
+                            "steward": own.get("steward") or "data-governance-steward@contoso.com",
+                            "org_unit": own.get("org_unit") or "Enterprise Data & AI Governance",
+                            "jurisdiction": own.get("jurisdiction") or "GLOBAL",
+                            "attested_by": prov.get("attested_by", "pod-engine-v0.1"),
+                            "source_system": prov.get("source_system", "tika+presidio"),
+                            "scanner_version": prov.get("scanner_version", "0.1.0"),
+                            "discovered_at": prov.get("discovered_at") or rec.get("issued_at"),
+                            "derived_from": prov.get("derived_from", []),
                             "status": rec["status"],
                             "ai_eligibility": rec["ai_eligibility"],
                             "minimum_clearance": rec["minimum_clearance"],
                             "egress_class": rec["egress_class"],
+                            "allow_rag_indexing": hand.get("allow_rag_indexing", rec["tier"] in ("Public", "Internal")),
+                            "allow_model_training": hand.get("allow_model_training", False),
+                            "redaction_categories": hand.get("redaction_categories", []),
                             "content_sha256": rec["content_sha256"],
+                            "schema_sha256": rec.get("schema_sha256") or integ.get("schema_sha256"),
+                            "extracted_text_sha256": rec.get("extracted_text_sha256") or integ.get("extracted_text_sha256"),
+                            "chunk_hashes": rec.get("chunk_hashes") or integ.get("chunk_hashes") or [],
+                            "size_bytes": integ.get("size_bytes"),
+                            "row_count": integ.get("row_count"),
+                            "fingerprint_method": integ.get("fingerprint_method", "raw_bytes_sha256"),
+                            "issued_at": rec.get("issued_at") or life.get("issued_at"),
                             "expires_at": rec["expires_at"],
+                            "ttl_days": life.get("ttl_days"),
+                            "previous_record_id": life.get("previous_record_id"),
                             "action": item["action"],
                         }
                     )
                 elif rev:
                     held_for_review += 1
+                    meta = rev.get("metadata") or {}
                     attested_items.append(
                         {
+                            "record_id": rev.get("review_id"),
                             "locator": rev["locator"],
                             "file_name": rev["locator"].rsplit("/", 1)[-1],
-                            "object_type": "file",
+                            "display_name": meta.get("display_name") or rev["locator"].rsplit("/", 1)[-1],
+                            "object_type": meta.get("object_type", "file"),
+                            "environment": meta.get("environment", "production"),
                             "tier": rev["proposed_tier"],
+                            "confidence": rev.get("confidence", 0.5),
+                            "classifier_engine": meta.get("classifier_engine", "presidio"),
+                            "sensitive_categories": meta.get("sensitive_categories", []),
+                            "owner": meta.get("owner") or req.owner,
+                            "steward": "privacy-compliance-steward@contoso.com",
+                            "org_unit": "Enterprise Data & AI Governance",
+                            "jurisdiction": "GLOBAL",
+                            "attested_by": "pod-engine-v0.1",
+                            "source_system": meta.get("source_system", "tika+presidio"),
                             "status": "PENDING_REVIEW (Unissued)",
                             "ai_eligibility": "deny",
                             "minimum_clearance": "Restricted",
                             "egress_class": "local_only",
-                            "content_sha256": rev["metadata"].get("content_sha256", ""),
+                            "content_sha256": meta.get("content_sha256", ""),
                             "expires_at": "-",
                             "action": item["action"],
                         }

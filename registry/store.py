@@ -822,6 +822,17 @@ class RegistryService:
             rows = session.execute(stmt.order_by(ReviewQueueModel.created_at)).scalars().all()
             return [self._review_to_dict(r) for r in rows]
 
+    def lookup_reviews_by_locator(self, locator: str) -> list[dict[str, Any]]:
+        """Return all human-review queue items for a given canonical object locator."""
+        with self.SessionLocal() as session:
+            stmt = (
+                select(ReviewQueueModel)
+                .where(ReviewQueueModel.locator == locator)
+                .order_by(ReviewQueueModel.created_at.desc())
+            )
+            rows = session.execute(stmt).scalars().all()
+            return [self._review_to_dict(r) for r in rows]
+
     def approve_pending_review(
         self,
         review_id: str,
