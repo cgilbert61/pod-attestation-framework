@@ -4,7 +4,7 @@
 
 # G1 Docket — by G1163RT Security Labs
 
-**Cryptographic Proof Of Data (POD) Attestation Framework & Zero-DB-Call AI Gateway Prevalidator (`v0.1`) — G1163RT Security Labs.**
+**Cryptographic Data Attestation Framework & Zero-DB-Call AI Gateway Prevalidator (`v0.1`) — G1163RT Security Labs.**
 
 AI gateways govern requests. Nothing attests the data those requests touch. **G1 Docket** closes that gap with three components and one open contract:
 

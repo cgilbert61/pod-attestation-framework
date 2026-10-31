@@ -80,7 +80,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <head>
   <meta charset="utf-8" />
   <link rel="icon" type="image/png" href="/assets/g1-logo.png" />
-  <title>G1 Docket by G1163RT Security Labs | Cryptographic Proof Of Data &amp; AI Prevalidator</title>
+  <title>G1 Docket by G1163RT Security Labs | Cryptographic Data Attestation &amp; AI Prevalidator</title>
   <style>
     :root { --bg: #0b1120; --panel: #1e293b; --panel2: #0f172a; --border: #334155; --text: #f8fafc; --muted: #94a3b8; --accent: #10b981; --warn: #f59e0b; --danger: #ef4444; --info: #3b82f6; }
     * { box-sizing: border-box; font-family: system-ui, -apple-system, sans-serif; }
@@ -148,7 +148,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
           <span id="modeBadge" class="badge badge-Public">ENFORCE MODE</span>
         </h1>
         <div style="color: var(--muted); font-size: 13px; margin-top: 4px;">
-          Cryptographic Proof Of Data (POD) Attestation Engine &amp; Zero-DB-Call AI Gateway Prevalidator
+          Cryptographic Data Attestation Engine &amp; Zero-DB-Call AI Gateway Prevalidator
         </div>
       </div>
     </div>
@@ -831,7 +831,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 
       <div class="inspector-body">
         <div id="inspBanner" class="english-verdict" style="margin-bottom: 0; font-size: 13px; padding: 10px 14px;">
-          Loading full 32-field POD in-toto v1 Attestation Statement &amp; DSSE signature envelope...
+          Loading full 32-field in-toto v1 Attestation Statement &amp; DSSE signature envelope...
         </div>
 
         <div class="inspector-grid">
@@ -940,7 +940,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       <span><strong>G1 Docket</strong> by <strong>G1163RT Security Labs</strong></span>
     </div>
     <div>
-      Cryptographic Proof Of Data (POD) Framework v0.1 &bull; DSSE Signed Provenance &amp; Zero-DB-Call Enforcement
+      G1 Docket Cryptographic Attestation Framework v0.1 &bull; DSSE Signed Provenance &amp; Zero-DB-Call Enforcement
     </div>
   </footer>
 
@@ -2631,7 +2631,7 @@ DLP_CONNECTOR_HTML = r"""<!DOCTYPE html>
 
       <div class="inspector-body">
         <div id="inspBanner" class="english-verdict" style="margin-bottom: 0; font-size: 13px; padding: 10px 14px;">
-          Loading full 32-field POD in-toto v1 Attestation Statement &amp; DSSE signature envelope...
+          Loading full 32-field in-toto v1 Attestation Statement &amp; DSSE signature envelope...
         </div>
 
         <div class="inspector-grid">

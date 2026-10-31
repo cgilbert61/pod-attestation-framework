@@ -229,7 +229,7 @@ def discover_selectable_drives_and_directories() -> list[dict[str, str]]:
     # 4. Discover Project Directories in D:\attestation and D:\
     for d_ws in (Path("/host_workspace"), Path("/app"), Path("D:/attestation")):
         if d_ws.is_dir():
-            _add("D:\\attestation", "📁 D:\\attestation (POD Framework Workspace)")
+            _add("D:\\attestation", "📁 D:\\attestation (G1 Docket Workspace)")
             try:
                 for child in sorted(d_ws.iterdir(), key=lambda p: p.name.lower()):
                     if child.is_dir() and not child.name.startswith(".") and child.name.lower() not in SKIP_DIR_NAMES:
